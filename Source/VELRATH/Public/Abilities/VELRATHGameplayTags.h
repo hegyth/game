@@ -1,0 +1,66 @@
+#pragma once
+
+#include "NativeGameplayTags.h"
+
+namespace VelrathGameplayTags
+{
+// Local input intent. These tags identify input; they do not authorize gameplay results.
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Move);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Look);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Ability_Attack_Light);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Ability_Attack_Heavy);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Ability_Block);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Ability_Parry);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Ability_Dodge);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Ability_Echo_Cast);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Input_Ability_Echo_Disrupt);
+
+// Character combat states defined by Combat System 1.0.
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_Locomotion);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_LightAttack);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_HeavyAttack);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_Block);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_Parry);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_Dodge);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_AbilityCast);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Combat_EchoCast);
+
+// Server-authoritative control and life states.
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Control_Stagger);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Control_GuardBreak);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Life_Dead);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Life_Respawn);
+
+// Replicated Echo lifecycle vocabulary. Cooldown is represented by Cooldown_Echo.
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Echo_Forming);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Echo_Active);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Echo_Expired);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(State_Echo_Destroyed);
+
+// Stable identities for approved Gameplay Abilities.
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Attack_Light);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Attack_Heavy);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Block);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Parry);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Dodge);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Echo_Cast);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Ability_Echo_Disrupt);
+
+// Cooldown classification used by the corresponding abilities and effects.
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Cooldown_Parry);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Cooldown_Dodge);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Cooldown_Echo);
+
+// Gameplay Effect classification; these tags do not implement the effects.
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Effect_Damage);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Effect_StaminaCost);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Effect_StaminaRegen);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Effect_Slow);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Effect_Stagger);
+
+// Gameplay events emitted by authoritative attack and Echo flows.
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Attack_Hit);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Attack_Parried);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Echo_Spawned);
+VELRATH_API UE_DECLARE_GAMEPLAY_TAG_EXTERN(Event_Echo_Expired);
+}

@@ -35,6 +35,6 @@ if ($editorExitCode -ne 0) {
 }
 
 $summary = & (Join-Path $PSScriptRoot 'ValidateAutomationReport.ps1') -ReportPath $reportFile
-Write-Output ("Automation tests passed: {0} succeeded, {1} failed, {2} not run. Report: {3}" -f `
-    $summary.Succeeded, $summary.Failed, $summary.NotRun, $reportFile)
+Write-Output ("Automation tests passed: {0} succeeded ({1} with warnings), {2} failed, {3} not run. Report: {4}" -f `
+    $summary.Succeeded, $summary.SucceededWithWarnings, $summary.Failed, $summary.NotRun, $reportFile)
 

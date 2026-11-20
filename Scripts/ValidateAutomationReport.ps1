@@ -18,7 +18,7 @@ catch {
 }
 
 $counts = @{}
-foreach ($propertyName in @('succeeded', 'failed', 'notRun')) {
+foreach ($propertyName in @('succeeded', 'succeededWithWarnings', 'failed', 'notRun')) {
     $property = $report.PSObject.Properties[$propertyName]
     if ($null -eq $property) {
         throw "Automation report is missing required property '$propertyName': $ReportPath"
@@ -38,7 +38,7 @@ foreach ($propertyName in @('succeeded', 'failed', 'notRun')) {
     $counts[$propertyName] = $value
 }
 
-$executedCount = $counts.succeeded + $counts.failed + $counts.notRun
+$executedCount = $counts.succeeded + $counts.succeededWithWarnings + $counts.failed + $counts.notRun
 $reportedTests = @($report.tests).Count
 
 if ($executedCount -eq 0 -or $reportedTests -eq 0) {
@@ -51,7 +51,8 @@ if ($counts.failed -gt 0 -or $counts.notRun -gt 0) {
 }
 
 [pscustomobject]@{
-    Succeeded = $counts.succeeded
+    Succeeded = $counts.succeeded + $counts.succeededWithWarnings
+    SucceededWithWarnings = $counts.succeededWithWarnings
     Failed = $counts.failed
     NotRun = $counts.notRun
     ReportPath = $ReportPath

@@ -31,7 +31,8 @@ bool FVelrathMovementDefaultsTest::RunTest(const FString& Parameters)
     }
 
     TestEqual(TEXT("Walk speed is 520 cm/s"), MovementComponent->MaxWalkSpeed, 520.0f);
-    TestEqual(TEXT("Sprint speed is stored for the future Sprint task"), Character->GetSprintSpeed(), 660.0f);
+    TestEqual(TEXT("Walk speed configuration is 520 cm/s"), Character->GetWalkSpeed(), 520.0f);
+    TestEqual(TEXT("Sprint speed configuration is 660 cm/s"), Character->GetSprintSpeed(), 660.0f);
     TestEqual(TEXT("Maximum acceleration is 3000 cm/s^2"), MovementComponent->MaxAcceleration, 3000.0f);
     TestEqual(TEXT("Walking braking deceleration is 3600 cm/s^2"), MovementComponent->BrakingDecelerationWalking, 3600.0f);
     TestEqual(TEXT("Backward movement multiplier is stored"), Character->GetBackwardMovementMultiplier(), 0.85f);

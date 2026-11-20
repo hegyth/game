@@ -21,7 +21,15 @@ public class VELRATH : ModuleRules
 
         if (Target.bBuildEditor)
         {
-            PrivateDependencyModuleNames.Add("UnrealEd");
+            PrivateDependencyModuleNames.AddRange(new[]
+            {
+                "CQTest",
+                "EngineSettings",
+                "LevelEditor",
+                "UnrealEd"
+            });
+
+            SetupIrisSupport(Target);
         }
     }
 }

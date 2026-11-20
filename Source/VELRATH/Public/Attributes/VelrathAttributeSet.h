@@ -15,9 +15,13 @@ public:
 
     static constexpr float DefaultHealth = 1000.0f;
     static constexpr float DefaultMaxHealth = 1000.0f;
+    static constexpr float DefaultStamina = 100.0f;
+    static constexpr float DefaultMaxStamina = 100.0f;
 
     ATTRIBUTE_ACCESSORS_BASIC(UVelrathAttributeSet, Health)
     ATTRIBUTE_ACCESSORS_BASIC(UVelrathAttributeSet, MaxHealth)
+    ATTRIBUTE_ACCESSORS_BASIC(UVelrathAttributeSet, Stamina)
+    ATTRIBUTE_ACCESSORS_BASIC(UVelrathAttributeSet, MaxStamina)
 
     virtual void GetLifetimeReplicatedProps(TArray<FLifetimeProperty>& OutLifetimeProps) const override;
     virtual void PreAttributeBaseChange(const FGameplayAttribute& Attribute, float& NewValue) const override;
@@ -32,11 +36,23 @@ protected:
     UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_MaxHealth, Category = "Attributes|Health")
     FGameplayAttributeData MaxHealth;
 
+    UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_Stamina, Category = "Attributes|Stamina")
+    FGameplayAttributeData Stamina;
+
+    UPROPERTY(BlueprintReadOnly, ReplicatedUsing = OnRep_MaxStamina, Category = "Attributes|Stamina")
+    FGameplayAttributeData MaxStamina;
+
     UFUNCTION()
     void OnRep_Health(const FGameplayAttributeData& OldHealth);
 
     UFUNCTION()
     void OnRep_MaxHealth(const FGameplayAttributeData& OldMaxHealth);
+
+    UFUNCTION()
+    void OnRep_Stamina(const FGameplayAttributeData& OldStamina);
+
+    UFUNCTION()
+    void OnRep_MaxStamina(const FGameplayAttributeData& OldMaxStamina);
 
 private:
     float ClampAttributeValue(const FGameplayAttribute& Attribute, float NewValue) const;

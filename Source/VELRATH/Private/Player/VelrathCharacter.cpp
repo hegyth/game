@@ -199,6 +199,12 @@ void AVelrathCharacter::InitializeDefaultAttributes()
     AbilitySystemComponent->SetNumericAttributeBase(
         UVelrathAttributeSet::GetHealthAttribute(),
         UVelrathAttributeSet::DefaultHealth);
+    AbilitySystemComponent->SetNumericAttributeBase(
+        UVelrathAttributeSet::GetMaxStaminaAttribute(),
+        UVelrathAttributeSet::DefaultMaxStamina);
+    AbilitySystemComponent->SetNumericAttributeBase(
+        UVelrathAttributeSet::GetStaminaAttribute(),
+        UVelrathAttributeSet::DefaultStamina);
 
     bDefaultAttributesInitialized = true;
 }

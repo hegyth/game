@@ -106,6 +106,8 @@ public:
         Test->TestTrue(TEXT("ASC Avatar Actor remains the Character"), AbilitySystemComponent->GetAvatarActor() == Character);
         Test->TestEqual(TEXT("PIE starts with Health 1000"), AttributeSet->GetHealth(), 1000.0f);
         Test->TestEqual(TEXT("PIE starts with MaxHealth 1000"), AttributeSet->GetMaxHealth(), 1000.0f);
+        Test->TestEqual(TEXT("PIE starts with Stamina 100"), AttributeSet->GetStamina(), 100.0f);
+        Test->TestEqual(TEXT("PIE starts with MaxStamina 100"), AttributeSet->GetMaxStamina(), 100.0f);
 
         int32 AttributeSetCount = 0;
         int32 TotalAttributeSetCount = 0;
@@ -129,6 +131,12 @@ public:
             EGameplayModOp::Additive,
             -100.0f);
         Test->TestEqual(TEXT("Authority Gameplay Effect changes PIE Health"), AttributeSet->GetHealth(), 900.0f);
+        ApplyInstantModifier(
+            *AbilitySystemComponent,
+            UVelrathAttributeSet::GetStaminaAttribute(),
+            EGameplayModOp::Additive,
+            -25.0f);
+        Test->TestEqual(TEXT("Authority Gameplay Effect changes PIE Stamina"), AttributeSet->GetStamina(), 75.0f);
 
         PlayerController->UnPossess();
         PlayerController->Possess(Character);
@@ -138,6 +146,10 @@ public:
             TEXT("Repeated possession does not reinitialize Health"),
             Character->GetVelrathAttributeSet()->GetHealth(),
             900.0f);
+        Test->TestEqual(
+            TEXT("Repeated possession does not reinitialize Stamina"),
+            Character->GetVelrathAttributeSet()->GetStamina(),
+            75.0f);
         Test->TestTrue(
             TEXT("Repeated possession preserves ASC Owner Actor"),
             AbilitySystemComponent->GetOwnerActor() == Character);
@@ -211,6 +223,8 @@ bool FVelrathHealthAttributeSetTest::RunTest(const FString& Parameters)
 
     TestEqual(TEXT("Initial Health is 1000"), AttributeSet->GetHealth(), 1000.0f);
     TestEqual(TEXT("Initial MaxHealth is 1000"), AttributeSet->GetMaxHealth(), 1000.0f);
+    TestEqual(TEXT("Initial Stamina is 100"), AttributeSet->GetStamina(), 100.0f);
+    TestEqual(TEXT("Initial MaxStamina is 100"), AttributeSet->GetMaxStamina(), 100.0f);
 
     int32 VelrathAttributeSetCount = 0;
     for (const UAttributeSet* SpawnedAttributeSet : AbilitySystemComponent->GetSpawnedAttributes())
@@ -224,6 +238,9 @@ bool FVelrathHealthAttributeSetTest::RunTest(const FString& Parameters)
     TestTrue(
         TEXT("ASC resolves Health to the Character-owned AttributeSet"),
         AbilitySystemComponent->HasAttributeSetForAttribute(UVelrathAttributeSet::GetHealthAttribute()));
+    TestTrue(
+        TEXT("ASC resolves Stamina to the Character-owned AttributeSet"),
+        AbilitySystemComponent->HasAttributeSetForAttribute(UVelrathAttributeSet::GetStaminaAttribute()));
 
     ApplyInstantModifier(
         *AbilitySystemComponent,
@@ -259,10 +276,48 @@ bool FVelrathHealthAttributeSetTest::RunTest(const FString& Parameters)
         -125.0f);
     TestEqual(TEXT("Gameplay Effect modifies Health through GAS"), AttributeSet->GetHealth(), 475.0f);
 
+    ApplyInstantModifier(
+        *AbilitySystemComponent,
+        UVelrathAttributeSet::GetStaminaAttribute(),
+        EGameplayModOp::Override,
+        -10.0f);
+    TestEqual(TEXT("Gameplay Effect cannot lower Stamina below zero"), AttributeSet->GetStamina(), 0.0f);
+
+    ApplyInstantModifier(
+        *AbilitySystemComponent,
+        UVelrathAttributeSet::GetStaminaAttribute(),
+        EGameplayModOp::Override,
+        150.0f);
+    TestEqual(TEXT("Gameplay Effect cannot raise Stamina above MaxStamina"), AttributeSet->GetStamina(), 100.0f);
+
+    ApplyInstantModifier(
+        *AbilitySystemComponent,
+        UVelrathAttributeSet::GetStaminaAttribute(),
+        EGameplayModOp::Override,
+        80.0f);
+    ApplyInstantModifier(
+        *AbilitySystemComponent,
+        UVelrathAttributeSet::GetMaxStaminaAttribute(),
+        EGameplayModOp::Override,
+        60.0f);
+    TestEqual(TEXT("Gameplay Effect changes MaxStamina"), AttributeSet->GetMaxStamina(), 60.0f);
+    TestEqual(TEXT("Reducing MaxStamina clamps existing Stamina"), AttributeSet->GetStamina(), 60.0f);
+
+    ApplyInstantModifier(
+        *AbilitySystemComponent,
+        UVelrathAttributeSet::GetStaminaAttribute(),
+        EGameplayModOp::Additive,
+        -15.0f);
+    TestEqual(TEXT("Gameplay Effect modifies Stamina through GAS"), AttributeSet->GetStamina(), 45.0f);
+
     FProperty* HealthProperty = FindFProperty<FProperty>(UVelrathAttributeSet::StaticClass(), TEXT("Health"));
     FProperty* MaxHealthProperty = FindFProperty<FProperty>(UVelrathAttributeSet::StaticClass(), TEXT("MaxHealth"));
+    FProperty* StaminaProperty = FindFProperty<FProperty>(UVelrathAttributeSet::StaticClass(), TEXT("Stamina"));
+    FProperty* MaxStaminaProperty = FindFProperty<FProperty>(UVelrathAttributeSet::StaticClass(), TEXT("MaxStamina"));
     TestNotNull(TEXT("Health reflected property exists"), HealthProperty);
     TestNotNull(TEXT("MaxHealth reflected property exists"), MaxHealthProperty);
+    TestNotNull(TEXT("Stamina reflected property exists"), StaminaProperty);
+    TestNotNull(TEXT("MaxStamina reflected property exists"), MaxStaminaProperty);
 
     TArray<FLifetimeProperty> LifetimeProperties;
     AttributeSet->GetLifetimeReplicatedProps(LifetimeProperties);
@@ -287,12 +342,38 @@ bool FVelrathHealthAttributeSetTest::RunTest(const FString& Parameters)
             HasLifetimeReplicationEntry(LifetimeProperties, *MaxHealthProperty));
     }
 
+    if (StaminaProperty != nullptr)
+    {
+        TestTrue(TEXT("Stamina is replicated"), StaminaProperty->HasAnyPropertyFlags(CPF_Net));
+        TestTrue(TEXT("Stamina uses RepNotify"), StaminaProperty->HasAnyPropertyFlags(CPF_RepNotify));
+        TestEqual(TEXT("Stamina uses OnRep_Stamina"), StaminaProperty->RepNotifyFunc, FName(TEXT("OnRep_Stamina")));
+        TestTrue(
+            TEXT("Stamina is registered by GetLifetimeReplicatedProps"),
+            HasLifetimeReplicationEntry(LifetimeProperties, *StaminaProperty));
+    }
+
+    if (MaxStaminaProperty != nullptr)
+    {
+        TestTrue(TEXT("MaxStamina is replicated"), MaxStaminaProperty->HasAnyPropertyFlags(CPF_Net));
+        TestTrue(TEXT("MaxStamina uses RepNotify"), MaxStaminaProperty->HasAnyPropertyFlags(CPF_RepNotify));
+        TestEqual(TEXT("MaxStamina uses OnRep_MaxStamina"), MaxStaminaProperty->RepNotifyFunc, FName(TEXT("OnRep_MaxStamina")));
+        TestTrue(
+            TEXT("MaxStamina is registered by GetLifetimeReplicatedProps"),
+            HasLifetimeReplicationEntry(LifetimeProperties, *MaxStaminaProperty));
+    }
+
     UFunction* HealthRepNotify = UVelrathAttributeSet::StaticClass()->FindFunctionByName(TEXT("OnRep_Health"));
     UFunction* MaxHealthRepNotify = UVelrathAttributeSet::StaticClass()->FindFunctionByName(TEXT("OnRep_MaxHealth"));
+    UFunction* StaminaRepNotify = UVelrathAttributeSet::StaticClass()->FindFunctionByName(TEXT("OnRep_Stamina"));
+    UFunction* MaxStaminaRepNotify = UVelrathAttributeSet::StaticClass()->FindFunctionByName(TEXT("OnRep_MaxStamina"));
     TestNotNull(TEXT("OnRep_Health callback exists"), HealthRepNotify);
     TestNotNull(TEXT("OnRep_MaxHealth callback exists"), MaxHealthRepNotify);
+    TestNotNull(TEXT("OnRep_Stamina callback exists"), StaminaRepNotify);
+    TestNotNull(TEXT("OnRep_MaxStamina callback exists"), MaxStaminaRepNotify);
     TestEqual(TEXT("OnRep_Health receives the old value"), HealthRepNotify != nullptr ? HealthRepNotify->NumParms : 0, 1);
     TestEqual(TEXT("OnRep_MaxHealth receives the old value"), MaxHealthRepNotify != nullptr ? MaxHealthRepNotify->NumParms : 0, 1);
+    TestEqual(TEXT("OnRep_Stamina receives the old value"), StaminaRepNotify != nullptr ? StaminaRepNotify->NumParms : 0, 1);
+    TestEqual(TEXT("OnRep_MaxStamina receives the old value"), MaxStaminaRepNotify != nullptr ? MaxStaminaRepNotify->NumParms : 0, 1);
 
     return true;
 }

@@ -18,6 +18,11 @@ public class VELRATH : ModuleRules
             "InputCore",
             "NetCore"
         });
+
+        if (Target.bBuildEditor)
+        {
+            PrivateDependencyModuleNames.Add("UnrealEd");
+        }
     }
 }
 

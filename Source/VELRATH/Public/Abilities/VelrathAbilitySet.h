@@ -25,6 +25,7 @@ public:
     }
     int32 Num() const { return AbilitySpecHandles.Num(); }
     const TArray<FGameplayAbilitySpecHandle>& GetAbilitySpecHandles() const { return AbilitySpecHandles; }
+    const UVelrathAbilitySet* GetGrantingAbilitySet() const { return GrantingAbilitySet.Get(); }
 
 private:
     friend class UVelrathAbilitySet;

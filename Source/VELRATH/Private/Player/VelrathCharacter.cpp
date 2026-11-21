@@ -183,6 +183,8 @@ void AVelrathCharacter::StopSprinting()
 void AVelrathCharacter::PossessedBy(AController* NewController)
 {
     Super::PossessedBy(NewController);
+    // PossessedBy is the authoritative Pawn possession hook; clients use OnRep_PlayerState.
+    bAuthoritativeAbilitySystemInitialized = true;
     InitializeAbilityActorInfo();
     InitializeDefaultAttributes();
     if (StartupAbilitySet != nullptr)
@@ -201,6 +203,18 @@ void AVelrathCharacter::OnRep_PlayerState()
 {
     Super::OnRep_PlayerState();
     InitializeAbilityActorInfo();
+}
+
+void AVelrathCharacter::Destroyed()
+{
+    RetireAbilitySystem();
+    Super::Destroyed();
+}
+
+void AVelrathCharacter::EndPlay(const EEndPlayReason::Type EndPlayReason)
+{
+    RetireAbilitySystem();
+    Super::EndPlay(EndPlayReason);
 }
 
 void AVelrathCharacter::InitializeAbilityActorInfo()
@@ -283,13 +297,19 @@ bool AVelrathCharacter::GrantStartupAbilities()
 
 bool AVelrathCharacter::RemoveStartupAbilities()
 {
-    if (!HasAuthority() || StartupAbilitySet == nullptr)
+    if (!HasAuthority() && !bAuthoritativeAbilitySystemInitialized)
     {
         return false;
     }
 
+    const UVelrathAbilitySet* GrantingAbilitySet = StartupAbilityHandles.GetGrantingAbilitySet();
+    if (GrantingAbilitySet == nullptr)
+    {
+        return !StartupAbilityHandles.HasGrantState();
+    }
+
     FText RemovalError;
-    if (!StartupAbilitySet->TakeFromAbilitySystem(StartupAbilityHandles, RemovalError))
+    if (!GrantingAbilitySet->TakeFromAbilitySystem(StartupAbilityHandles, RemovalError))
     {
         UE_LOG(
             LogVelrathCharacter,
@@ -301,6 +321,37 @@ bool AVelrathCharacter::RemoveStartupAbilities()
     }
 
     return true;
+}
+
+void AVelrathCharacter::RetireAbilitySystem()
+{
+    if (bAbilitySystemRetired || AbilitySystemComponent == nullptr)
+    {
+        return;
+    }
+    bAbilitySystemRetired = true;
+
+    if (bAuthoritativeAbilitySystemInitialized)
+    {
+        AbilitySystemComponent->CancelAllAbilities();
+        const TArray<FActiveGameplayEffectHandle> ActiveEffectHandles =
+            AbilitySystemComponent->GetActiveEffects(FGameplayEffectQuery());
+        for (const FActiveGameplayEffectHandle& ActiveEffectHandle : ActiveEffectHandles)
+        {
+            AbilitySystemComponent->RemoveActiveGameplayEffect(ActiveEffectHandle);
+        }
+
+        if (!RemoveStartupAbilities())
+        {
+            UE_LOG(
+                LogVelrathCharacter,
+                Error,
+                TEXT("Failed to remove startup abilities while retiring %s."),
+                *GetPathName());
+        }
+    }
+
+    AbilitySystemComponent->ClearActorInfo();
 }
 
 void AVelrathCharacter::InitializeDefaultAttributes()

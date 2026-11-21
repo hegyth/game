@@ -29,6 +29,8 @@ public:
     virtual void PossessedBy(AController* NewController) override;
     virtual void UnPossessed() override;
     virtual void OnRep_PlayerState() override;
+    virtual void Destroyed() override;
+    virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
     const UVelrathAttributeSet* GetVelrathAttributeSet() const { return AttributeSet; }
@@ -71,6 +73,7 @@ private:
     void StopSprinting();
     void InitializeAbilityActorInfo();
     void InitializeDefaultAttributes();
+    void RetireAbilitySystem();
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Abilities", meta = (AllowPrivateAccess = "true"))
     TObjectPtr<UAbilitySystemComponent> AbilitySystemComponent;
@@ -83,6 +86,12 @@ private:
 
     UPROPERTY(Transient)
     bool bDefaultAttributesInitialized = false;
+
+    UPROPERTY(Transient)
+    bool bAuthoritativeAbilitySystemInitialized = false;
+
+    UPROPERTY(Transient)
+    bool bAbilitySystemRetired = false;
 
     UPROPERTY(Transient)
     FVelrathAbilitySetGrantedHandles StartupAbilityHandles;

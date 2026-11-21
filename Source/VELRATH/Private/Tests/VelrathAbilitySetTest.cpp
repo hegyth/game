@@ -377,6 +377,95 @@ bool FVelrathAbilityGrantLifecycleTest::RunTest(const FString& Parameters)
         TEXT("Directly owned grants can be removed from their original ASC"),
         MultipleSet->TakeFromAbilitySystem(ForeignHandles, GrantError));
 
+    UVelrathAbilitySet* RetirementSet = MakeAbilitySet(
+        *ProductionAsset,
+        {UVelrathGrantTestAbilityOne::StaticClass()});
+    AVelrathCharacter* RetiringCharacter = SpawnConfiguredCharacter(*RetirementSet);
+    APlayerController* RetiringController = RetiringCharacter != nullptr
+        ? PossessCharacter(*RetiringCharacter)
+        : nullptr;
+    TestNotNull(TEXT("Retirement Character spawns"), RetiringCharacter);
+    TestNotNull(TEXT("Retirement Character is possessed"), RetiringController);
+    if (RetiringCharacter == nullptr || RetiringController == nullptr)
+    {
+        return false;
+    }
+
+    UAbilitySystemComponent* RetiringAbilitySystem = RetiringCharacter->GetAbilitySystemComponent();
+    TestNotNull(TEXT("Retirement Character owns an ASC"), RetiringAbilitySystem);
+    if (RetiringAbilitySystem == nullptr)
+    {
+        return false;
+    }
+
+    RetiringCharacter->DispatchBeginPlay();
+    TestTrue(
+        TEXT("Retirement Character has entered the Unreal play lifecycle"),
+        RetiringCharacter->HasActorBegunPlay());
+
+    const FGameplayAbilitySpecHandle RetiringStartupHandle =
+        RetiringCharacter->GetStartupAbilityHandles()[0];
+    const FGameplayAbilitySpecHandle RetiringExternalHandle = RetiringAbilitySystem->GiveAbility(
+        FGameplayAbilitySpec(UVelrathGrantTestAbilityTwo::StaticClass(), 1));
+    TestTrue(TEXT("Retirement setup grants an external ability"), RetiringExternalHandle.IsValid());
+
+    UGameplayEffect* InfiniteEffect = NewObject<UGameplayEffect>(GetTransientPackage());
+    InfiniteEffect->DurationPolicy = EGameplayEffectDurationType::Infinite;
+    const FActiveGameplayEffectHandle InfiniteEffectHandle = RetiringAbilitySystem->ApplyGameplayEffectToSelf(
+        InfiniteEffect,
+        1.0f,
+        RetiringAbilitySystem->MakeEffectContext());
+    TestTrue(TEXT("Retirement setup applies an active Gameplay Effect"), InfiniteEffectHandle.IsValid());
+    TestEqual(
+        TEXT("Retirement ASC contains startup and external abilities"),
+        CountAbilitySpecs(*RetiringAbilitySystem),
+        2);
+    TestEqual(
+        TEXT("Retirement ASC contains one active Gameplay Effect"),
+        RetiringAbilitySystem->GetActiveEffects(FGameplayEffectQuery()).Num(),
+        1);
+
+    RetiringController->UnPossess();
+    TestTrue(
+        TEXT("UnPossessed without destruction preserves startup grants"),
+        RetiringAbilitySystem->FindAbilitySpecFromHandle(RetiringStartupHandle) != nullptr);
+    TestTrue(
+        TEXT("UnPossessed without destruction preserves active Gameplay Effects"),
+        RetiringAbilitySystem->GetActiveGameplayEffect(InfiniteEffectHandle) != nullptr);
+    TestTrue(
+        TEXT("UnPossessed without destruction preserves ActorInfo"),
+        RetiringAbilitySystem->AbilityActorInfo.IsValid());
+
+    RetiringController->Possess(RetiringCharacter);
+    TestEqual(
+        TEXT("Repossession retains the same two ability specs"),
+        CountAbilitySpecs(*RetiringAbilitySystem),
+        2);
+    TestEqual(
+        TEXT("Repossession does not reapply or remove the active effect"),
+        RetiringAbilitySystem->GetActiveEffects(FGameplayEffectQuery()).Num(),
+        1);
+
+    TestTrue(TEXT("Destroy enters the real Character retirement lifecycle"), RetiringCharacter->Destroy());
+    World->Tick(LEVELTICK_All, UE_SMALL_NUMBER);
+    TestFalse(
+        TEXT("Destroyed Character clears the owner from its GAS ActorInfo"),
+        RetiringAbilitySystem->GetOwnerActor() != nullptr);
+    TestFalse(
+        TEXT("Destroyed Character clears the avatar from its GAS ActorInfo"),
+        RetiringAbilitySystem->GetAvatarActor() != nullptr);
+    TestNull(
+        TEXT("Destroyed Character removes its owned startup grant"),
+        RetiringAbilitySystem->FindAbilitySpecFromHandle(RetiringStartupHandle));
+    TestEqual(
+        TEXT("Destroyed Character leaves no activatable ability specs on its retired ASC"),
+        CountAbilitySpecs(*RetiringAbilitySystem),
+        0);
+    TestEqual(
+        TEXT("Destroyed Character removes all active Gameplay Effects"),
+        RetiringAbilitySystem->GetActiveEffects(FGameplayEffectQuery()).Num(),
+        0);
+
     return true;
 }
 

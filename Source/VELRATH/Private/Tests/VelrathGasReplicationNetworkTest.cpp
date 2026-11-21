@@ -41,6 +41,7 @@ struct FVelrathGasNetworkState : public FBasePIENetworkComponentState
     AVelrathCharacter* TargetCharacter = nullptr;
     AVelrathCharacter* PreviousTargetCharacter = nullptr;
     const UVelrathAttributeSet* PreviousAttributeSet = nullptr;
+    TWeakObjectPtr<UAbilitySystemComponent> PreviousAbilitySystemComponent;
 };
 
 AVelrathCharacter* FindCharacterForPlayerId(UWorld& World, const int32 PlayerId)
@@ -139,7 +140,7 @@ UVelrathAbilitySet* MakeNetworkTestAbilitySet(const AVelrathCharacter& Character
 }
 }
 
-NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
+NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.GAS.Network.ReplicationLifecycle")
 {
     FPIENetworkComponent<FVelrathGasNetworkState> Network{TestRunner, TestCommandBuilder, bInitializing};
     int32 TargetPlayerId = INDEX_NONE;
@@ -221,6 +222,12 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 ASSERT_THAT(AreEqual(1, Character->GetStartupAbilityHandleCount(), TEXT("Server must retain one valid grant handle.")));
                 ASSERT_THAT(IsTrue(Character->GetStartupAbilityHandles()[0].IsValid(), TEXT("Retained server ability handle must be valid.")));
                 ASSERT_THAT(AreEqual(1, GetAbilitySpecCount(State), TEXT("Server ASC must contain one test ability spec.")));
+
+                const FGameplayAbilitySpecHandle FirstGrantHandle = Character->GetStartupAbilityHandles()[0];
+                ASSERT_THAT(IsTrue(Character->GrantStartupAbilities(), TEXT("A duplicate server grant request must be idempotent.")));
+                ASSERT_THAT(AreEqual(1, Character->GetStartupAbilityHandleCount(), TEXT("A duplicate server grant request must retain exactly one handle.")));
+                ASSERT_THAT(IsTrue(Character->GetStartupAbilityHandles()[0] == FirstGrantHandle, TEXT("A duplicate server grant request must retain the original handle.")));
+                ASSERT_THAT(AreEqual(1, GetAbilitySpecCount(State), TEXT("A duplicate server grant request must not add an ability spec.")));
                 Character->ForceNetUpdate();
             })
             .UntilClient(TEXT("Wait for owner-only ability spec"), OwningClientIndex, [](FVelrathGasNetworkState& State)
@@ -272,20 +279,24 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 ASSERT_THAT(IsNear(InitialStamina, GetStamina(State), UE_SMALL_NUMBER, TEXT("Remote-client Stamina must initialize to 100.")));
                 ASSERT_THAT(IsNear(InitialStamina, GetMaxStamina(State), UE_SMALL_NUMBER, TEXT("Remote-client MaxStamina must initialize to 100.")));
             })
-            .ThenServer(TEXT("Set authoritative Health"), [](FVelrathGasNetworkState& State)
+            .ThenServer(TEXT("Apply authoritative Health Gameplay Effect"), [](FVelrathGasNetworkState& State)
             {
-                State.TargetCharacter->GetAbilitySystemComponent()->SetNumericAttributeBase(
-                    UVelrathAttributeSet::GetHealthAttribute(), ReplicatedHealth);
+                ApplyInstantOverride(
+                    *State.TargetCharacter->GetAbilitySystemComponent(),
+                    UVelrathAttributeSet::GetHealthAttribute(),
+                    ReplicatedHealth);
                 State.TargetCharacter->ForceNetUpdate();
             })
             .UntilClients(TEXT("Wait for Health on owner and remote"), [](FVelrathGasNetworkState& State)
             {
                 return GetHealth(State) == ReplicatedHealth;
             })
-            .ThenServer(TEXT("Set authoritative MaxHealth"), [](FVelrathGasNetworkState& State)
+            .ThenServer(TEXT("Apply authoritative MaxHealth Gameplay Effect"), [](FVelrathGasNetworkState& State)
             {
-                State.TargetCharacter->GetAbilitySystemComponent()->SetNumericAttributeBase(
-                    UVelrathAttributeSet::GetMaxHealthAttribute(), ReplicatedMaxHealth);
+                ApplyInstantOverride(
+                    *State.TargetCharacter->GetAbilitySystemComponent(),
+                    UVelrathAttributeSet::GetMaxHealthAttribute(),
+                    ReplicatedMaxHealth);
                 State.TargetCharacter->ForceNetUpdate();
             })
             .UntilClients(TEXT("Wait for MaxHealth on owner and remote"), [](FVelrathGasNetworkState& State)
@@ -353,8 +364,10 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
             })
             .ThenServer(TEXT("Send an authoritative correction"), [](FVelrathGasNetworkState& State)
             {
-                State.TargetCharacter->GetAbilitySystemComponent()->SetNumericAttributeBase(
-                    UVelrathAttributeSet::GetHealthAttribute(), CorrectedHealth);
+                ApplyInstantOverride(
+                    *State.TargetCharacter->GetAbilitySystemComponent(),
+                    UVelrathAttributeSet::GetHealthAttribute(),
+                    CorrectedHealth);
                 ApplyInstantOverride(
                     *State.TargetCharacter->GetAbilitySystemComponent(),
                     UVelrathAttributeSet::GetStaminaAttribute(),
@@ -373,6 +386,10 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 ASSERT_THAT(IsNotNull(Controller, TEXT("Target pawn must have its server PlayerController before repossession.")));
 
                 Controller->UnPossess();
+                ASSERT_THAT(AreEqual(1, GetAbilitySpecCount(State), TEXT("UnPossessed without destruction must preserve the startup ability.")));
+                ASSERT_THAT(AreEqual(1, Character->GetStartupAbilityHandleCount(), TEXT("UnPossessed without destruction must preserve the startup handle.")));
+                ASSERT_THAT(IsNear(CorrectedHealth, GetHealth(State), UE_SMALL_NUMBER, TEXT("UnPossessed without destruction must preserve Health.")));
+                ASSERT_THAT(IsNear(CorrectedStamina, GetStamina(State), UE_SMALL_NUMBER, TEXT("UnPossessed without destruction must preserve Stamina.")));
                 Controller->Possess(Character);
 
                 ASSERT_THAT(IsTrue(Controller->GetPawn() == Character, TEXT("Server must repossess the same pawn.")));
@@ -399,11 +416,15 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
             {
                 State.PreviousTargetCharacter = State.TargetCharacter;
                 State.PreviousAttributeSet = State.TargetCharacter->GetVelrathAttributeSet();
+                State.PreviousAbilitySystemComponent = State.TargetCharacter->GetAbilitySystemComponent();
             })
             .ThenServer(TEXT("Destroy and replace the authoritative pawn"), [this](FVelrathGasNetworkState& State)
             {
                 State.PreviousTargetCharacter = State.TargetCharacter;
                 State.PreviousAttributeSet = State.TargetCharacter->GetVelrathAttributeSet();
+                UAbilitySystemComponent* PreviousAbilitySystemComponent =
+                    State.TargetCharacter->GetAbilitySystemComponent();
+                State.PreviousAbilitySystemComponent = PreviousAbilitySystemComponent;
                 APlayerController* Controller = Cast<APlayerController>(State.TargetCharacter->GetController());
                 AGameModeBase* GameMode = State.World->GetAuthGameMode();
                 ASSERT_THAT(IsNotNull(Controller, TEXT("Replacement requires the target server PlayerController.")));
@@ -411,6 +432,11 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
 
                 Controller->UnPossess();
                 State.PreviousTargetCharacter->Destroy();
+                ASSERT_THAT(IsTrue(PreviousAbilitySystemComponent->GetOwnerActor() == nullptr, TEXT("Destroyed server Character must clear the old ASC owner.")));
+                ASSERT_THAT(IsTrue(PreviousAbilitySystemComponent->GetAvatarActor() == nullptr, TEXT("Destroyed server Character must clear the old ASC avatar.")));
+                ASSERT_THAT(AreEqual(0, PreviousAbilitySystemComponent->GetNumActiveGameplayEffects(), TEXT("Destroyed server Character must retire all active effects.")));
+                ASSERT_THAT(AreEqual(0, PreviousAbilitySystemComponent->GetActivatableAbilities().Num(), TEXT("Destroyed server Character must leave no activatable abilities.")));
+                ASSERT_THAT(AreEqual(0, State.PreviousTargetCharacter->GetStartupAbilityHandleCount(), TEXT("Destroyed server Character must clear its retained startup handles.")));
                 GameMode->RestartPlayer(Controller);
                 State.TargetCharacter = Cast<AVelrathCharacter>(Controller->GetPawn());
 
@@ -442,7 +468,13 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 }
 
                 State.TargetCharacter = Replacement;
+                const UAbilitySystemComponent* PreviousAbilitySystemComponent =
+                    State.PreviousAbilitySystemComponent.Get();
+                const bool bPreviousAbilitySystemRetired = PreviousAbilitySystemComponent == nullptr ||
+                    (PreviousAbilitySystemComponent->GetOwnerActor() == nullptr &&
+                        PreviousAbilitySystemComponent->GetAvatarActor() == nullptr);
                 return HasReadyGasState(Replacement)
+                    && bPreviousAbilitySystemRetired
                     && Replacement->GetVelrathAttributeSet() != State.PreviousAttributeSet
                     && GetHealth(State) == InitialHealth
                     && GetMaxHealth(State) == InitialHealth
@@ -464,9 +496,9 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
             })
             .Then(TEXT("Record completed multi-instance scenario"), [this]()
             {
-                TestRunner->AddInfo(TEXT("GAS-007 PASS: listen server + 2 clients independently verified server-only ability grants, owner-only spec delivery, retained handles, client non-authority, repossession, pawn replacement, and attribute regression."));
+                TestRunner->AddInfo(TEXT("GAS-009 PASS: listen server + 2 clients independently verified server-only retirement, idempotent grants, owner-only spec delivery, UnPossessed/repossession preservation, old-pawn cleanup, pawn replacement, and attribute regression."));
                 UE_LOG(LogVelrathGasNetworkTest, Display,
-                    TEXT("GAS-007 PASS: ability grants and startup attributes converged with the expected owner/remote visibility; replacement pawn initialized cleanly."));
+                    TEXT("GAS-009 PASS: the old pawn retired cleanly and the replacement ASC, grants, and attributes converged with the expected owner/remote visibility."));
             });
     }
 };

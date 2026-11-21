@@ -121,6 +121,9 @@ Spawn choice and final transform are server-only decisions. Clients may display 
 - Removal uses only those retained handles and requires the original authoritative ASC and issuing Ability Set, so abilities granted by other systems remain untouched.
 - A replacement Character owns a fresh ASC and grant state. GAS replication delivers ability specs to the owning client according to normal Mixed-mode visibility; server-only handle bookkeeping is not replicated.
 - Ability grants and the TD-22 initialization effect have separate guards. Granting abilities never resets Health or Stamina.
+- `UnPossessed` is not a retirement signal: it stops pawn-local input state but preserves the Character-owned ASC, changed attributes, active effects, and retained grants for same-Character repossession.
+- Explicit destruction and other end-play paths retire the old Character idempotently through the standard `Destroyed`/`EndPlay` lifecycle. The authoritative instance cancels abilities, removes its remaining active effects, and removes only the startup grants identified by that Ability Set's retained handles; every instance then clears Actor Info. The server-lifetime authority marker is transient and never replicated, allowing pending-kill teardown after the Actor has lost its live network role without authorizing client mutation.
+- Grant bookkeeping references the issuing Ability Set and ASC weakly, so it cannot keep a destroyed Character or ASC alive. A replacement pawn never consumes handles from the retired ASC.
 
 ### Abilities, effects, tags, and cues
 

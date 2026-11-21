@@ -7,7 +7,7 @@
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
     FVelrathNativeGameplayTagsTest,
-    "VELRATH.GameplayTags.NativeRegistration",
+    "VELRATH.GAS.Tags.NativeRegistration",
     EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
 
 bool FVelrathNativeGameplayTagsTest::RunTest(const FString& Parameters)

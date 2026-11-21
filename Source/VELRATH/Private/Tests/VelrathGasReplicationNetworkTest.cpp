@@ -4,6 +4,7 @@
 #include "Components/PIENetworkComponent.h"
 
 #include "Abilities/GameplayAbilityTypes.h"
+#include "Abilities/VelrathAbilitySet.h"
 #include "AbilitySystemComponent.h"
 #include "Attributes/VelrathAttributeSet.h"
 #include "Engine/NetConnection.h"
@@ -14,6 +15,7 @@
 #include "GameFramework/PlayerState.h"
 #include "GameplayEffect.h"
 #include "Player/VelrathCharacter.h"
+#include "Tests/VelrathTestGameplayAbilities.h"
 
 #if ENABLE_PIE_NETWORK_TEST
 
@@ -110,6 +112,31 @@ float GetMaxStamina(const FVelrathGasNetworkState& State)
 {
     return State.TargetCharacter->GetVelrathAttributeSet()->GetMaxStamina();
 }
+
+int32 GetAbilitySpecCount(const FVelrathGasNetworkState& State)
+{
+    return State.TargetCharacter->GetAbilitySystemComponent()->GetActivatableAbilities().Num();
+}
+
+bool HasTestAbility(const FVelrathGasNetworkState& State)
+{
+    return State.TargetCharacter->GetAbilitySystemComponent()->FindAbilitySpecFromClass(
+        UVelrathGrantTestAbilityOne::StaticClass()) != nullptr;
+}
+
+UVelrathAbilitySet* MakeNetworkTestAbilitySet(const AVelrathCharacter& Character)
+{
+    const UVelrathAbilitySet* SourceSet = Character.GetStartupAbilitySet();
+    if (SourceSet == nullptr)
+    {
+        return nullptr;
+    }
+
+    UVelrathAbilitySet* TestSet = NewObject<UVelrathAbilitySet>(GetTransientPackage());
+    TestSet->SetInitialAttributesEffect(SourceSet->GetInitialAttributesEffect());
+    TestSet->SetGrantedAbilities({UVelrathGrantTestAbilityOne::StaticClass()});
+    return TestSet;
+}
 }
 
 NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
@@ -169,15 +196,56 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 ASSERT_THAT(IsNotNull(Controller, TEXT("Server PlayerController must possess the target pawn.")));
                 ASSERT_THAT(IsTrue(Controller->GetPawn() == Character, TEXT("Server PlayerController ownership must resolve to the target pawn.")));
                 ASSERT_THAT(AreEqual(EGameplayEffectReplicationMode::Mixed, AbilitySystemComponent->ReplicationMode, TEXT("Character ASC must use Mixed replication mode.")));
+                ASSERT_THAT(IsTrue(Character->AreDefaultAttributesInitialized(), TEXT("Server must complete the initialization effect after ActorInfo.")));
+                ASSERT_THAT(IsTrue(Character->AreStartupAbilitiesGranted(), TEXT("Server must complete the production startup Ability Set, including an empty set.")));
+                ASSERT_THAT(AreEqual(0, Character->GetStartupAbilityHandleCount(), TEXT("Production startup data must not contain placeholder combat abilities.")));
                 ASSERT_THAT(IsNear(InitialHealth, GetHealth(State), UE_SMALL_NUMBER, TEXT("Server Health must initialize to 1000.")));
                 ASSERT_THAT(IsNear(InitialHealth, GetMaxHealth(State), UE_SMALL_NUMBER, TEXT("Server MaxHealth must initialize to 1000.")));
                 ASSERT_THAT(IsNear(InitialStamina, GetStamina(State), UE_SMALL_NUMBER, TEXT("Server Stamina must initialize to 100.")));
                 ASSERT_THAT(IsNear(InitialStamina, GetMaxStamina(State), UE_SMALL_NUMBER, TEXT("Server MaxStamina must initialize to 100.")));
 
                 UE_LOG(LogVelrathGasNetworkTest, Display,
-                    TEXT("GAS-004 initial state: serverNetMode=%d clients=%d targetPlayerId=%d Health=%.0f MaxHealth=%.0f Stamina=%.0f MaxStamina=%.0f"),
+                    TEXT("GAS-006 initial state: serverNetMode=%d clients=%d targetPlayerId=%d Health=%.0f MaxHealth=%.0f Stamina=%.0f MaxStamina=%.0f"),
                     static_cast<int32>(State.World->GetNetMode()), State.ClientCount, TargetPlayerId,
                     GetHealth(State), GetMaxHealth(State), GetStamina(State), GetMaxStamina(State));
+            })
+            .ThenServer(TEXT("Grant a test startup ability through the Ability Set lifecycle"), [this](FVelrathGasNetworkState& State)
+            {
+                AVelrathCharacter* Character = State.TargetCharacter;
+                UVelrathAbilitySet* TestSet = MakeNetworkTestAbilitySet(*Character);
+                ASSERT_THAT(IsNotNull(TestSet, TEXT("Network test must create a valid transient Ability Set.")));
+                ASSERT_THAT(IsTrue(Character->RemoveStartupAbilities(), TEXT("Server must clear the completed empty production grant state.")));
+                Character->SetStartupAbilitySet(TestSet);
+                ASSERT_THAT(IsTrue(Character->GrantStartupAbilities(), TEXT("Server must grant the configured test ability.")));
+                ASSERT_THAT(IsTrue(Character->AreStartupAbilitiesGranted(), TEXT("Server must retain the test grant state.")));
+                ASSERT_THAT(AreEqual(1, Character->GetStartupAbilityHandleCount(), TEXT("Server must retain one valid grant handle.")));
+                ASSERT_THAT(IsTrue(Character->GetStartupAbilityHandles()[0].IsValid(), TEXT("Retained server ability handle must be valid.")));
+                ASSERT_THAT(AreEqual(1, GetAbilitySpecCount(State), TEXT("Server ASC must contain one test ability spec.")));
+                Character->ForceNetUpdate();
+            })
+            .UntilClient(TEXT("Wait for owner-only ability spec"), OwningClientIndex, [](FVelrathGasNetworkState& State)
+            {
+                return GetAbilitySpecCount(State) == 1 && HasTestAbility(State);
+            })
+            .ThenClient(TEXT("Validate owning client receives the ability spec"), OwningClientIndex, [this](FVelrathGasNetworkState& State)
+            {
+                ASSERT_THAT(IsTrue(HasTestAbility(State), TEXT("Owning client must receive the granted Gameplay Ability spec.")));
+                ASSERT_THAT(AreEqual(1, GetAbilitySpecCount(State), TEXT("Owning client must receive exactly one test ability spec.")));
+                ASSERT_THAT(IsFalse(State.TargetCharacter->AreStartupAbilitiesGranted(), TEXT("Server-only grant bookkeeping must not replicate to the owning client.")));
+            })
+            .ThenClient(TEXT("Validate remote observer receives no owner-only ability spec"), RemoteClientIndex, [this](FVelrathGasNetworkState& State)
+            {
+                ASSERT_THAT(IsFalse(HasTestAbility(State), TEXT("Remote observer must not receive the owner's Gameplay Ability spec.")));
+                ASSERT_THAT(AreEqual(0, GetAbilitySpecCount(State), TEXT("Remote observer ASC must expose no owner-only ability specs.")));
+            })
+            .ThenClient(TEXT("Attempt a client-side startup grant"), OwningClientIndex, [this](FVelrathGasNetworkState& State)
+            {
+                ASSERT_THAT(IsFalse(State.TargetCharacter->GrantStartupAbilities(), TEXT("A client must not grant startup abilities.")));
+            })
+            .ThenServer(TEXT("Verify client grant attempt did not change authority"), [this](FVelrathGasNetworkState& State)
+            {
+                ASSERT_THAT(AreEqual(1, GetAbilitySpecCount(State), TEXT("Client grant attempt must not change the server ASC.")));
+                ASSERT_THAT(AreEqual(1, State.TargetCharacter->GetStartupAbilityHandleCount(), TEXT("Client grant attempt must not change authoritative handles.")));
             })
             .ThenClient(TEXT("Validate owning-client identity and ActorInfo"), OwningClientIndex, [this](FVelrathGasNetworkState& State)
             {
@@ -189,6 +257,7 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 ASSERT_THAT(IsTrue(AbilitySystemComponent->AbilityActorInfo.IsValid(), TEXT("Owning-client AbilityActorInfo must be valid.")));
                 ASSERT_THAT(IsTrue(AbilitySystemComponent->AbilityActorInfo->PlayerController.Get() == LocalController, TEXT("Owning-client ActorInfo must reference its local PlayerController.")));
                 ASSERT_THAT(AreEqual(EGameplayEffectReplicationMode::Mixed, AbilitySystemComponent->ReplicationMode, TEXT("Owning-client ASC must retain Mixed replication mode.")));
+                ASSERT_THAT(IsFalse(State.TargetCharacter->AreDefaultAttributesInitialized(), TEXT("Owning client must not run server startup initialization.")));
                 ASSERT_THAT(IsNear(InitialStamina, GetStamina(State), UE_SMALL_NUMBER, TEXT("Owning-client Stamina must initialize to 100.")));
                 ASSERT_THAT(IsNear(InitialStamina, GetMaxStamina(State), UE_SMALL_NUMBER, TEXT("Owning-client MaxStamina must initialize to 100.")));
             })
@@ -199,6 +268,7 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 ASSERT_THAT(IsTrue(LocalController->GetPawn() != State.TargetCharacter, TEXT("Remote client must observe, not own, the target pawn.")));
                 ASSERT_THAT(IsNotNull(State.TargetCharacter->GetAbilitySystemComponent(), TEXT("Remote target pawn must expose its replicated ASC.")));
                 ASSERT_THAT(AreEqual(EGameplayEffectReplicationMode::Mixed, State.TargetCharacter->GetAbilitySystemComponent()->ReplicationMode, TEXT("Remote ASC must retain Mixed replication mode.")));
+                ASSERT_THAT(IsFalse(State.TargetCharacter->AreDefaultAttributesInitialized(), TEXT("Remote client must not run server startup initialization.")));
                 ASSERT_THAT(IsNear(InitialStamina, GetStamina(State), UE_SMALL_NUMBER, TEXT("Remote-client Stamina must initialize to 100.")));
                 ASSERT_THAT(IsNear(InitialStamina, GetMaxStamina(State), UE_SMALL_NUMBER, TEXT("Remote-client MaxStamina must initialize to 100.")));
             })
@@ -310,6 +380,8 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 ASSERT_THAT(IsNear(CorrectedStamina, GetStamina(State), UE_SMALL_NUMBER, TEXT("ActorInfo reinitialization must not reset Stamina.")));
                 ASSERT_THAT(IsNear(ReplicatedMaxStamina, GetMaxStamina(State), UE_SMALL_NUMBER, TEXT("ActorInfo reinitialization must not reset MaxStamina.")));
                 ASSERT_THAT(IsTrue(HasReadyGasState(Character), TEXT("Server ActorInfo must remain valid after repossession.")));
+                ASSERT_THAT(AreEqual(1, GetAbilitySpecCount(State), TEXT("Repossession must not duplicate the startup ability.")));
+                ASSERT_THAT(AreEqual(1, Character->GetStartupAbilityHandleCount(), TEXT("Repossession must retain exactly one startup handle.")));
             })
             .UntilClient(TEXT("Wait for owning client after repossession"), OwningClientIndex, [](FVelrathGasNetworkState& State)
             {
@@ -319,7 +391,9 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                     && HasReadyGasState(State.TargetCharacter)
                     && GetHealth(State) == CorrectedHealth
                     && GetStamina(State) == CorrectedStamina
-                    && GetMaxStamina(State) == ReplicatedMaxStamina;
+                    && GetMaxStamina(State) == ReplicatedMaxStamina
+                    && GetAbilitySpecCount(State) == 1
+                    && HasTestAbility(State);
             })
             .ThenClients(TEXT("Remember old pawn before replacement"), [](FVelrathGasNetworkState& State)
             {
@@ -344,10 +418,20 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 ASSERT_THAT(IsTrue(State.TargetCharacter != State.PreviousTargetCharacter, TEXT("Replacement must be a new Character instance.")));
                 ASSERT_THAT(IsTrue(State.TargetCharacter->GetVelrathAttributeSet() != State.PreviousAttributeSet, TEXT("Replacement Character must own a new AttributeSet instance.")));
                 ASSERT_THAT(IsTrue(HasReadyGasState(State.TargetCharacter), TEXT("Replacement server Character must have valid GAS ActorInfo.")));
+                ASSERT_THAT(IsTrue(State.TargetCharacter->AreDefaultAttributesInitialized(), TEXT("Replacement server Character must run one fresh initialization effect.")));
                 ASSERT_THAT(IsNear(InitialHealth, GetHealth(State), UE_SMALL_NUMBER, TEXT("Replacement server Character must initialize Health to 1000.")));
                 ASSERT_THAT(IsNear(InitialHealth, GetMaxHealth(State), UE_SMALL_NUMBER, TEXT("Replacement server Character must initialize MaxHealth to 1000.")));
                 ASSERT_THAT(IsNear(InitialStamina, GetStamina(State), UE_SMALL_NUMBER, TEXT("Replacement server Character must initialize Stamina to 100.")));
                 ASSERT_THAT(IsNear(InitialStamina, GetMaxStamina(State), UE_SMALL_NUMBER, TEXT("Replacement server Character must initialize MaxStamina to 100.")));
+
+                UVelrathAbilitySet* TestSet = MakeNetworkTestAbilitySet(*State.TargetCharacter);
+                ASSERT_THAT(IsNotNull(TestSet, TEXT("Replacement network test must create a transient Ability Set.")));
+                ASSERT_THAT(IsTrue(State.TargetCharacter->RemoveStartupAbilities(), TEXT("Replacement must clear its completed empty production grant state.")));
+                State.TargetCharacter->SetStartupAbilitySet(TestSet);
+                ASSERT_THAT(IsTrue(State.TargetCharacter->GrantStartupAbilities(), TEXT("Replacement Character must receive its own test grant.")));
+                ASSERT_THAT(AreEqual(1, State.TargetCharacter->GetStartupAbilityHandleCount(), TEXT("Replacement Character must retain its own valid handle.")));
+                ASSERT_THAT(AreEqual(1, GetAbilitySpecCount(State), TEXT("Replacement server ASC must contain one test ability.")));
+                State.TargetCharacter->ForceNetUpdate();
             })
             .UntilClients(TEXT("Wait for replacement pawn on owner and remote"), [this](FVelrathGasNetworkState& State)
             {
@@ -363,7 +447,10 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                     && GetHealth(State) == InitialHealth
                     && GetMaxHealth(State) == InitialHealth
                     && GetStamina(State) == InitialStamina
-                    && GetMaxStamina(State) == InitialStamina;
+                    && GetMaxStamina(State) == InitialStamina
+                    && (State.ClientIndex == OwningClientIndex
+                        ? GetAbilitySpecCount(State) == 1 && HasTestAbility(State)
+                        : GetAbilitySpecCount(State) == 0 && !HasTestAbility(State));
             })
             .ThenClient(TEXT("Validate replacement owning-client ActorInfo"), OwningClientIndex, [this](FVelrathGasNetworkState& State)
             {
@@ -372,12 +459,14 @@ NETWORK_TEST_CLASS(FVelrathGasReplicationNetworkTest, "VELRATH.Network.GAS")
                 ASSERT_THAT(IsTrue(LocalController != nullptr && LocalController->GetPawn() == State.TargetCharacter, TEXT("Owning client must possess the replacement Character.")));
                 ASSERT_THAT(IsTrue(AbilitySystemComponent->AbilityActorInfo.IsValid(), TEXT("Replacement owning-client ActorInfo must be valid.")));
                 ASSERT_THAT(IsTrue(AbilitySystemComponent->AbilityActorInfo->PlayerController.Get() == LocalController, TEXT("Replacement ActorInfo must reference the owning PlayerController.")));
+                ASSERT_THAT(IsTrue(HasTestAbility(State), TEXT("Replacement owning client must receive the replacement pawn's ability spec.")));
+                ASSERT_THAT(AreEqual(1, GetAbilitySpecCount(State), TEXT("Replacement owning client must receive exactly one ability spec.")));
             })
             .Then(TEXT("Record completed multi-instance scenario"), [this]()
             {
-                TestRunner->AddInfo(TEXT("GAS-004 PASS: listen server + 2 clients independently verified Health/MaxHealth/Stamina/MaxStamina replication, client non-authority, ActorInfo reinitialization, and pawn replacement."));
+                TestRunner->AddInfo(TEXT("GAS-007 PASS: listen server + 2 clients independently verified server-only ability grants, owner-only spec delivery, retained handles, client non-authority, repossession, pawn replacement, and attribute regression."));
                 UE_LOG(LogVelrathGasNetworkTest, Display,
-                    TEXT("GAS-004 PASS: Health/MaxHealth/Stamina/MaxStamina converged across server, owning client, and remote client; replacement pawn initialized cleanly."));
+                    TEXT("GAS-007 PASS: ability grants and startup attributes converged with the expected owner/remote visibility; replacement pawn initialized cleanly."));
             });
     }
 };

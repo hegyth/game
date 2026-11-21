@@ -5,10 +5,6 @@
 #include "Net/UnrealNetwork.h"
 
 UVelrathAttributeSet::UVelrathAttributeSet()
-    : Health(DefaultHealth)
-    , MaxHealth(DefaultMaxHealth)
-    , Stamina(DefaultStamina)
-    , MaxStamina(DefaultMaxStamina)
 {
 }
 

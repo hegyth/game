@@ -1,6 +1,7 @@
 #pragma once
 
 #include "AbilitySystemInterface.h"
+#include "Abilities/VelrathAbilitySet.h"
 #include "CoreMinimal.h"
 #include "GameFramework/Character.h"
 #include "VelrathCharacter.generated.h"
@@ -12,6 +13,7 @@ class UInputComponent;
 class UInputMappingContext;
 class USpringArmComponent;
 class UVelrathAttributeSet;
+class UVelrathCharacterMovementComponent;
 struct FInputActionValue;
 
 UCLASS()
@@ -20,15 +22,30 @@ class VELRATH_API AVelrathCharacter : public ACharacter, public IAbilitySystemIn
     GENERATED_BODY()
 
 public:
-    AVelrathCharacter();
+    AVelrathCharacter(const FObjectInitializer& ObjectInitializer = FObjectInitializer::Get());
 
     virtual UAbilitySystemComponent* GetAbilitySystemComponent() const override;
     virtual void PawnClientRestart() override;
     virtual void PossessedBy(AController* NewController) override;
+    virtual void UnPossessed() override;
     virtual void OnRep_PlayerState() override;
     virtual void SetupPlayerInputComponent(UInputComponent* PlayerInputComponent) override;
 
     const UVelrathAttributeSet* GetVelrathAttributeSet() const { return AttributeSet; }
+    const UVelrathAbilitySet* GetStartupAbilitySet() const { return StartupAbilitySet; }
+    bool AreDefaultAttributesInitialized() const { return bDefaultAttributesInitialized; }
+    bool AreStartupAbilitiesGranted() const;
+    int32 GetStartupAbilityHandleCount() const { return StartupAbilityHandles.Num(); }
+    const TArray<FGameplayAbilitySpecHandle>& GetStartupAbilityHandles() const
+    {
+        return StartupAbilityHandles.GetAbilitySpecHandles();
+    }
+    bool GrantStartupAbilities();
+    bool RemoveStartupAbilities();
+
+#if WITH_EDITOR
+    void SetStartupAbilitySet(UVelrathAbilitySet* InAbilitySet) { StartupAbilitySet = InAbilitySet; }
+#endif
 
     USpringArmComponent* GetCameraBoom() const { return CameraBoom; }
     UCameraComponent* GetFollowCamera() const { return FollowCamera; }
@@ -39,6 +56,7 @@ public:
     float GetBackwardMovementMultiplier() const { return BackwardMovementMultiplier; }
     float GetAttackMovementMultiplier() const { return AttackMovementMultiplier; }
     float GetBlockMovementMultiplier() const { return BlockMovementMultiplier; }
+    UVelrathCharacterMovementComponent* GetVelrathCharacterMovement() const;
 
     const UInputMappingContext* GetDefaultMappingContext() const { return DefaultMappingContext; }
     const UInputAction* GetMoveAction() const { return MoveAction; }
@@ -60,7 +78,14 @@ private:
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Transient, Category = "Abilities", meta = (AllowPrivateAccess = "true"))
     TObjectPtr<UVelrathAttributeSet> AttributeSet;
 
+    UPROPERTY(EditDefaultsOnly, BlueprintReadOnly, Category = "Abilities|Startup", meta = (AllowPrivateAccess = "true"))
+    TObjectPtr<UVelrathAbilitySet> StartupAbilitySet;
+
+    UPROPERTY(Transient)
     bool bDefaultAttributesInitialized = false;
+
+    UPROPERTY(Transient)
+    FVelrathAbilitySetGrantedHandles StartupAbilityHandles;
 
     UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Camera", meta = (AllowPrivateAccess = "true"))
     TObjectPtr<USpringArmComponent> CameraBoom;

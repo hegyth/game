@@ -20,6 +20,7 @@
 #include "InputMappingContext.h"
 #include "InputModifiers.h"
 #include "Player/VelrathCharacter.h"
+#include "Player/VelrathCharacterMovementComponent.h"
 #include "Tests/AutomationCommon.h"
 #include "Tests/AutomationEditorCommon.h"
 
@@ -155,7 +156,7 @@ public:
                 {});
 
             bObservedSprintSpeed |= FMath::IsNearlyEqual(
-                Character->GetCharacterMovement()->MaxWalkSpeed,
+                Character->GetCharacterMovement()->GetMaxSpeed(),
                 Character->GetSprintSpeed());
 
             if (FPlatformTime::Seconds() - ExerciseStartTimeSeconds < 0.5)
@@ -191,7 +192,7 @@ public:
         Test->TestTrue(TEXT("Sprint input reaches 660 cm/s in PIE"), bObservedSprintSpeed);
         Test->TestEqual(
             TEXT("Releasing Sprint restores 520 cm/s in PIE"),
-            Character->GetCharacterMovement()->MaxWalkSpeed,
+            Character->GetCharacterMovement()->GetMaxSpeed(),
             520.0f);
         Test->TestTrue(
             TEXT("Move input changes the Character capsule location in PIE"),
@@ -304,22 +305,22 @@ bool FVelrathInputBindingsTest::RunTest(const FString& Parameters)
     TestNotNull(TEXT("Sprint binds Canceled"), SprintCanceledBinding);
 
     const FInputActionInstance SprintInstance(Character->GetSprintAction());
-    TestEqual(TEXT("Character starts at walk speed"), Character->GetCharacterMovement()->MaxWalkSpeed, 520.0f);
+    TestFalse(TEXT("Character starts without sprint intent"), Character->GetVelrathCharacterMovement()->WantsToSprint());
     if (SprintStartedBinding != nullptr)
     {
         SprintStartedBinding->Execute(SprintInstance);
-        TestEqual(TEXT("Sprint Started switches to 660 cm/s"), Character->GetCharacterMovement()->MaxWalkSpeed, 660.0f);
+        TestTrue(TEXT("Sprint Started records predicted sprint intent"), Character->GetVelrathCharacterMovement()->WantsToSprint());
     }
     if (SprintCompletedBinding != nullptr)
     {
         SprintCompletedBinding->Execute(SprintInstance);
-        TestEqual(TEXT("Sprint Completed restores 520 cm/s"), Character->GetCharacterMovement()->MaxWalkSpeed, 520.0f);
+        TestFalse(TEXT("Sprint Completed clears predicted sprint intent"), Character->GetVelrathCharacterMovement()->WantsToSprint());
     }
     if (SprintStartedBinding != nullptr && SprintCanceledBinding != nullptr)
     {
         SprintStartedBinding->Execute(SprintInstance);
         SprintCanceledBinding->Execute(SprintInstance);
-        TestEqual(TEXT("Sprint Canceled restores 520 cm/s"), Character->GetCharacterMovement()->MaxWalkSpeed, 520.0f);
+        TestFalse(TEXT("Sprint Canceled clears predicted sprint intent"), Character->GetVelrathCharacterMovement()->WantsToSprint());
     }
 
     return true;

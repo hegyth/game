@@ -13,11 +13,6 @@ class VELRATH_API UVelrathAttributeSet : public UAttributeSet
 public:
     UVelrathAttributeSet();
 
-    static constexpr float DefaultHealth = 1000.0f;
-    static constexpr float DefaultMaxHealth = 1000.0f;
-    static constexpr float DefaultStamina = 100.0f;
-    static constexpr float DefaultMaxStamina = 100.0f;
-
     ATTRIBUTE_ACCESSORS_BASIC(UVelrathAttributeSet, Health)
     ATTRIBUTE_ACCESSORS_BASIC(UVelrathAttributeSet, MaxHealth)
     ATTRIBUTE_ACCESSORS_BASIC(UVelrathAttributeSet, Stamina)

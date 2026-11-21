@@ -13,9 +13,7 @@ Source alignment:
 - This document supplies the initial numerical combat and Echo baseline that those documents previously left open.
 - Exact archetype-specific abilities remain Pending Design Approval.
 
-Known documentation mismatch: `GAME_VISION.md` and `ARCHITECTURE.md` still describe exact combat/Echo values as unresolved, and `ARCHITECTURE.md` refers to the future path `docs/COMBAT_SPEC.md`. This approved specification establishes the initial implementation baseline at `docs/combat/COMBAT_SPEC.md`; the older references should be corrected in a separate documentation task. This is a documentation-status mismatch, not a runtime architecture conflict.
-
-Current code has a replicated Character-owned ASC in `Mixed` replication mode, initialized on the server in `PossessedBy` and on the owning client in `OnRep_PlayerState`. The current base `UAttributeSet` is only a placeholder; none of the combat rules below are implemented yet.
+Current code has a replicated Character-owned ASC in `Mixed` replication mode, initialized on the server in `PossessedBy` and on the owning client in `OnRep_PlayerState`. `UVelrathAttributeSet` owns the four replicated attributes, and GAS-006 implements TD-22 through the shared startup Primary Data Asset and one server-applied Instant Gameplay Effect with no playable C++ fallback magnitudes.
 
 ## 2. Design Goals
 
@@ -39,7 +37,15 @@ Current code has a replicated Character-owned ASC in `Mixed` replication mode, i
 - Tick `0` is the activation tick of the action unless a section states otherwise.
 - Server simulation tick indices are authoritative. Client prediction uses the same authored tick windows and is corrected by the server.
 
-The `60 Hz` value is a gameplay-logic contract. It does not assert that all Unreal physics runs in a separate fixed 60 Hz loop. The implementation of scheduling, catch-up, drift handling, and synchronization between gameplay ticks, Character Movement, montages, and world delta time remains an open technical decision.
+TD-01 approves a hybrid scheduler for this contract. One server-world logical combat clock is driven once per Unreal World Tick by the world's gameplay `DeltaSeconds`. It retains elapsed time in a double-precision accumulator and emits zero or more fixed `1/60`-second combat steps; an Actor/Component tick interval or Unreal timer is not treated as an exact `60 Hz` clock. Each emitted step increments one monotonic `uint64` tick before processing that tick. Step extraction preserves a normalized sub-step remainder and must pass long-run drift tests rather than depending on exact floating-point equality at a boundary.
+
+At most eight combat steps may run in one Unreal World Tick. Any additional accumulated time remains pending for later World Ticks: the scheduler does not discard ticks, enlarge the step, or jump window boundaries after a hitch. A server that persistently cannot drain the backlog is outside competitive performance acceptance and must expose overrun telemetry; it must not silently shorten or skip Startup, Active, Recovery, Parry, Dodge, or Echo windows.
+
+An authoritative action stores the server `StartTick` accepted by GAS, and its local action tick is `CurrentTick - StartTick`. Catch-up steps advance discrete combat state and may repeat queries against the authoritative world transform currently available, but they do not substep or rewind Character Movement or Unreal physics. GAS owns ability/effect lifecycle, Character Movement owns physical movement and correction, and montages visualize/reconcile to the combat state rather than authorizing it.
+
+TD-02 approves a hybrid network-time mapping. The authoritative clock epoch begins at `CurrentTick = 0` when the server gameplay world's clock initializes at world begin play. Respawn retains the epoch and tick sequence; world teardown/travel creates a new epoch. `AVelrathGameState` pairs sampled authoritative ticks with `AGameStateBase::GetServerWorldTimeSeconds()` in a replicated anchor containing epoch, sequence, tick, and sampled server time. The anchor updates at `10 Hz` under normal operation and requests an immediate update at epoch creation and combat-clock overrun begin/end. No per-combat-tick RPC or property update is permitted.
+
+Clients estimate presentation time from the newest valid pair as `AnchorTick + floor(max(0, EstimatedServerTime - AnchorServerTime) * 60)`, capped at 30 unconfirmed ticks beyond the anchor. The estimate rebases on each newer anchor and holds/falls back after the 500 ms extrapolation horizon. It is expected to correct after server hitch/backlog because authoritative `CurrentTick` is not defined as `floor(ServerWorldTime * 60)`. Replicated action/feature state carries authoritative instance, revision, start, phase/state-change, and optional end anchors; that state overrides any estimate. Client time remains presentation/prediction input only and cannot authorize any combat result.
 
 ### Determinism rules
 
@@ -67,7 +73,34 @@ The `60 Hz` value is a gameplay-logic contract. It does not assert that all Unre
 
 Use `ACharacter` and `UCharacterMovementComponent` for locomotion, acceleration, deceleration, prediction, and correction. Do not introduce a custom movement protocol.
 
-Movement restrictions are driven by authoritative/predicted combat state. The exact composition order when backward, attack, and block multipliers overlap is not approved and is listed as an open technical question. No additional movement mechanics are defined by this specification.
+Movement restrictions are driven by authoritative/predicted combat state. TD-03 approves the following movement-speed rules:
+
+1. In Normal/Locomotion, use Walk `520 cm/s`, or Sprint `660 cm/s` while Sprint intent is held and the current state permits Sprint.
+2. During Attack or Block, Sprint is prohibited. Use the Walk base `520 cm/s` regardless of Sprint intent.
+3. Apply exactly one directional multiplier: `1.0` for forward/sideways movement or `0.85` for backward movement.
+4. Apply exactly one combat-state multiplier: Normal `1.0`, Attack `0.45`, or Block `0.60`. Attack and Block are mutually exclusive canonical combat states, so their multipliers never stack.
+5. The server computes and clamps the final allowed speed:
+
+```text
+FinalSpeed = ServerClamp(BaseSpeed × DirectionalMultiplier × CombatMultiplier)
+```
+
+6. Entering Attack or Block suppresses Sprint speed without clearing held Sprint intent. On exit, Sprint resumes when its intent is still held and the resulting state permits Sprint; otherwise movement uses Walk.
+
+Expected speeds for the approved inputs are:
+
+| Combat state | Sprint intent | Base speed | Direction | Directional multiplier | Combat multiplier | Expected final speed |
+| --- | --- | ---: | --- | ---: | ---: | ---: |
+| Normal | Not held | Walk `520` | Forward/sideways | `1.0` | `1.0` | `520 cm/s` |
+| Normal | Not held | Walk `520` | Backward | `0.85` | `1.0` | `442 cm/s` |
+| Normal | Held and allowed | Sprint `660` | Forward/sideways | `1.0` | `1.0` | `660 cm/s` |
+| Normal | Held and allowed | Sprint `660` | Backward | `0.85` | `1.0` | `561 cm/s` |
+| Attack | Either | Walk `520` | Forward/sideways | `1.0` | `0.45` | `234 cm/s` |
+| Attack | Either | Walk `520` | Backward | `0.85` | `0.45` | `198.9 cm/s` |
+| Block | Either | Walk `520` | Forward/sideways | `1.0` | `0.60` | `312 cm/s` |
+| Block | Either | Walk `520` | Backward | `0.85` | `0.60` | `265.2 cm/s` |
+
+The owning client may predict these factors only from movement intent and predicted combat state available to Character Movement replay. The server remains authoritative and corrects invalid combinations through the standard Character Movement path. No additional movement mechanics are defined by this specification.
 
 ## 5. Combat State Machine
 
@@ -212,10 +245,10 @@ The server performs the formula and `RoundHalfUp`. Damage is applied through a s
 
 All three MVP archetypes begin with:
 
-- Maximum HP: `1000`.
-- Maximum Stamina: `100`.
+- Health/Maximum Health: `1000/1000`.
+- Stamina/Maximum Stamina: `100/100`.
 
-The future `UVelrathAttributeSet` owns replicated HP and Stamina. Attribute changes use Gameplay Effects and standard AttributeSet replication/RepNotify patterns. The current base `UAttributeSet` cannot implement this contract and must be replaced in a separate code task.
+`UVelrathAttributeSet` owns the replicated current and maximum values. Under TD-22, one Instant Gameplay Effect is the sole runtime implementation source for all four starting magnitudes. The shared startup Data Asset references that effect without repeating the numbers. The server applies it once to each new Character after Actor Info initialization, maxima before current values; clients only observe replication. Repossession of the same Character never reapplies it, while respawn initializes the new Character/ASC/AttributeSet once.
 
 ### Stamina rules
 
@@ -239,7 +272,7 @@ Parry ordering is mandatory:
 2. If the server confirms success during `[2, 8)`, apply a `12` Stamina refund.
 3. A success therefore costs `6` net; a failure costs the original `18`.
 
-This can be represented by an activation cost Gameplay Effect and a server-only success refund Gameplay Effect. The current placeholder AttributeSet cannot execute the sequence yet, but the architecture can support it without changing the approved values.
+This can be represented by an activation cost Gameplay Effect and a server-only success refund Gameplay Effect. `UVelrathAttributeSet` can represent the resource changes; the ability/effects that execute this sequence remain future combat tasks.
 
 Derived block-hit costs are `23` Stamina for Light (`20%` of 115) and `36` for Heavy (`20%` of 180), assuming the resource cost follows the same integer rounding rule. The exact rounding rule for resource costs, and the outcome when available Stamina is below the required block-hit cost, remain open technical/design questions.
 
@@ -420,7 +453,7 @@ Archetype-specific abilities are separate configurable Gameplay Abilities refere
 - Predicted montages must reconcile with server rejection/cancellation through standard GAS behavior.
 - Light and Heavy movement multipliers apply for their action duration; Block uses its blocking multiplier while active.
 - Dodge should use standard Character Movement/root-motion support compatible with prediction. The displacement curve is not specified.
-- Montage frame rate, section boundaries, and authored notify placement must be validated against the 60 Hz tick contract. The exact scheduler-to-animation mapping remains open.
+- Montage frame rate, section boundaries, and authored notify placement must be validated against the 60 Hz tick contract. Montage time and notifies may request or present transitions, but the authoritative action-local tick decides every gameplay boundary. Predicted/remote montage alignment uses the approved TD-02 action and clock anchors and accepts correction.
 
 ## 15. Multiplayer Requirements
 
@@ -428,6 +461,9 @@ Archetype-specific abilities are separate configurable Gameplay Abilities refere
 - Use `UCharacterMovementComponent` prediction/correction for locomotion and supported Dodge movement.
 - Use GAS prediction keys and prediction policies for responsive abilities where safe.
 - Replicate ASC abilities/effects/tags according to GAS and replicate approved AttributeSet values with RepNotify.
+- Apply initial attributes only on the server after Actor Info initialization; owning and remote clients must obtain them only through replication.
+- Use GameState server-time synchronization plus sparse TD-02 clock/action anchors for presentation; never replicate or RPC every combat tick.
+- Treat clock/action replication as latest-state snapshots with epoch, instance, and revision ordering. Late join must reconstruct current state without replaying an earlier multicast.
 - Replicate Echoes as standard Unreal Actors and use Gameplay Cues for cosmetics.
 - Never accept client-local hit or final damage as authoritative.
 - Test under artificial latency, jitter, and packet loss before claiming multiplayer readiness.
@@ -470,13 +506,24 @@ Use scoped logging categories, Unreal Insights/trace events, Visual Logger, and 
 
 Each row is a binary PASS/FAIL condition. Criteria blocked by an open technical decision cannot pass until that decision is approved and the criterion is made executable.
 
+### Combat time
+
+| ID | PASS condition |
+| --- | --- |
+| TIME-01 | Equal total gameplay `DeltaSeconds` supplied as `60 x 1/60`, `30 x 1/30`, `20 x 1/20`, or `120 x 1/120` produces the same authoritative tick count after backlog drains. |
+| TIME-02 | One World Tick executes no more than eight combat steps; excess time remains accumulated and later steps are contiguous with no duplicate or skipped tick index. |
+| TIME-03 | A hitch followed by recovery preserves every scheduled transition and half-open window boundary; no variable-size combat step is introduced. |
+| TIME-04 | For an action with authoritative `StartTick`, local tick is exactly `CurrentTick - StartTick`, `[start, end)` includes `start`, excludes `end`, and a transition at tick `N` is visible to resolution at tick `N`. |
+| TIME-05 | Paused/zero gameplay delta advances no combat tick, and render FPS or replication cadence cannot directly change the authoritative tick sequence. |
+| TIME-06 | A long deterministic run using varied delta partitions produces the expected tick count and a normalized remainder without cumulative boundary drift. |
+
 ### Movement
 
 | ID | PASS condition |
 | --- | --- |
 | MOV-01 | Authoritative locomotion configuration reports walk `520 cm/s`, sprint `660 cm/s`, acceleration `3000 cm/s^2`, and deceleration `3600 cm/s^2`. |
 | MOV-02 | Character capsule reports radius `38 cm` and half-height `90 cm`. |
-| MOV-03 | Backward movement applies multiplier `0.85`; attack applies `0.45`; Block applies `0.60`, with the approved composition rule once resolved. |
+| MOV-03 | Server uses `FinalSpeed = ServerClamp(BaseSpeed × DirectionalMultiplier × CombatMultiplier)`; Attack and Block force the Walk base and ignore Sprint intent for current speed; all Normal, Attack, Block, forward/sideways, and backward cases match the Section 4 expected-speed table; held Sprint resumes on exit only when the resulting state permits it. |
 | MOV-04 | Authoritative Dodge displacement never exceeds `400 cm`. |
 
 ### Attack timing
@@ -533,6 +580,17 @@ Each row is a binary PASS/FAIL condition. Criteria blocked by an open technical 
 | STA-05 | Dodge activation fails without 28 available Stamina and consumes exactly 28 on successful commit. |
 | STA-06 | Block-hit Stamina cost is computed from 20% of incoming base damage using the approved resource rounding rule. |
 
+### Attribute initialization
+
+| ID | PASS condition |
+| --- | --- |
+| ATTR-01 | Validated startup content has exactly one Instant initialization effect with `Override` modifiers for MaxHealth, Health, MaxStamina, and Stamina, producing `1000/1000` and `100/100`; no runtime C++/Blueprint/Data Asset magnitude duplicates those values. |
+| ATTR-02 | A new authoritative Character applies the initialization effect exactly once after valid Actor Info initialization and owns exactly one `UVelrathAttributeSet`. |
+| ATTR-03 | Repossession/repeated Actor Info initialization of the same Character preserves changed current and maximum values and does not apply the initialization effect again. |
+| ATTR-04 | Respawn/pawn replacement creates a different Character, ASC, and AttributeSet and runs one fresh initialization that converges on server, owning client, and remote client. |
+| ATTR-05 | No client path applies the initialization effect or supplies initial magnitudes; an unauthorized client mutation cannot change server or remote values. |
+| ATTR-06 | Missing or invalid startup data/effect fails validation and startup without fallback constants, partial success, or a completed initialization guard. |
+
 ### Resonance / Echo
 
 | ID | PASS condition |
@@ -570,11 +628,8 @@ Each row is a binary PASS/FAIL condition. Criteria blocked by an open technical 
 
 ## 19. Open Technical Questions
 
-The following items are unresolved. Implementations must not silently choose gameplay behavior for them:
+The following items are unresolved. Implementations must not silently choose gameplay behavior for them. TD-01, TD-02, TD-03, and TD-22 are approved in their owning sections/documents, so their original item numbers are omitted:
 
-1. How is the 60 Hz gameplay tick scheduled, caught up, and synchronized with Unreal world time, Character Movement, physics, and montages?
-2. What is the authoritative tick epoch and how are predicted client ticks mapped to server ticks?
-3. In what order do backward, attack, and Block movement multipliers compose when they overlap?
 4. What hurtbox topology and server sweep shape/sampling method are used for Light and Heavy attacks?
 5. Which stable replicated identifiers define deterministic same-tick hit ordering?
 6. When a Block hit requires more Stamina than remains, does that hit retain Block reduction or resolve as normal damage before GuardBreak?
@@ -588,9 +643,8 @@ The following items are unresolved. Implementations must not silently choose gam
 14. Which Echo surfaces, slope, vertical offset, line-of-sight, and navigation constraints are valid?
 15. Which players may Disrupt an Echo, and what authoritative state does successful Disrupt apply beyond destruction?
 16. Must the 720-tick Echo cooldown survive owner death/respawn? If yes, where is it stored while ASC remains Character-owned?
-17. How are Echo lifecycle server tick anchors mapped to client presentation without per-frame timer replication?
+17. Which Echo lifecycle states and transition anchors must its replicated snapshot expose through the approved TD-02 mapping?
 18. What are the approved durations/strengths for Flinch, generic Stagger, Slow outside Rift Field, and Knockback?
 19. What archetype-specific Gameplay Abilities and values are approved for Vanguard, Reaver, and Weaver?
 20. What measured latency threshold and attack types justify a separate lag-compensation/rewind design?
 21. How is the Respawn state represented across destruction of the old Character and initialization of the new Character?
-22. What runtime data asset/effect layout is the single implementation source for these approved values without duplicating them?

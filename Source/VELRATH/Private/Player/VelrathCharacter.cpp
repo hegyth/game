@@ -1,6 +1,10 @@
 #include "Player/VelrathCharacter.h"
 
+#include "Player/VelrathCharacterMovementComponent.h"
+
+#include "Abilities/VelrathAbilitySet.h"
 #include "AbilitySystemComponent.h"
+#include "ActiveGameplayEffectHandle.h"
 #include "Attributes/VelrathAttributeSet.h"
 #include "Camera/CameraComponent.h"
 #include "Components/CapsuleComponent.h"
@@ -17,7 +21,11 @@
 #include "InputMappingContext.h"
 #include "InputModifiers.h"
 
-AVelrathCharacter::AVelrathCharacter()
+DEFINE_LOG_CATEGORY_STATIC(LogVelrathCharacter, Log, All);
+
+AVelrathCharacter::AVelrathCharacter(const FObjectInitializer& ObjectInitializer)
+    : Super(ObjectInitializer.SetDefaultSubobjectClass<UVelrathCharacterMovementComponent>(
+          ACharacter::CharacterMovementComponentName))
 {
     bReplicates = true;
 
@@ -86,6 +94,11 @@ AVelrathCharacter::AVelrathCharacter()
 UAbilitySystemComponent* AVelrathCharacter::GetAbilitySystemComponent() const
 {
     return AbilitySystemComponent;
+}
+
+UVelrathCharacterMovementComponent* AVelrathCharacter::GetVelrathCharacterMovement() const
+{
+    return CastChecked<UVelrathCharacterMovementComponent>(GetCharacterMovement());
 }
 
 void AVelrathCharacter::PawnClientRestart()
@@ -159,12 +172,12 @@ void AVelrathCharacter::Look(const FInputActionValue& Value)
 
 void AVelrathCharacter::StartSprinting()
 {
-    GetCharacterMovement()->MaxWalkSpeed = SprintSpeed;
+    GetVelrathCharacterMovement()->SetWantsToSprint(true);
 }
 
 void AVelrathCharacter::StopSprinting()
 {
-    GetCharacterMovement()->MaxWalkSpeed = WalkSpeed;
+    GetVelrathCharacterMovement()->SetWantsToSprint(false);
 }
 
 void AVelrathCharacter::PossessedBy(AController* NewController)
@@ -172,6 +185,16 @@ void AVelrathCharacter::PossessedBy(AController* NewController)
     Super::PossessedBy(NewController);
     InitializeAbilityActorInfo();
     InitializeDefaultAttributes();
+    if (StartupAbilitySet != nullptr)
+    {
+        GrantStartupAbilities();
+    }
+}
+
+void AVelrathCharacter::UnPossessed()
+{
+    StopSprinting();
+    Super::UnPossessed();
 }
 
 void AVelrathCharacter::OnRep_PlayerState()
@@ -186,25 +209,172 @@ void AVelrathCharacter::InitializeAbilityActorInfo()
     AbilitySystemComponent->InitAbilityActorInfo(this, this);
 }
 
+bool AVelrathCharacter::AreStartupAbilitiesGranted() const
+{
+    return StartupAbilityHandles.IsGrantCompleteFor(AbilitySystemComponent, StartupAbilitySet);
+}
+
+bool AVelrathCharacter::GrantStartupAbilities()
+{
+    if (!HasAuthority())
+    {
+        return false;
+    }
+
+    if (AreStartupAbilitiesGranted())
+    {
+        return true;
+    }
+
+    if (AbilitySystemComponent == nullptr ||
+        !AbilitySystemComponent->AbilityActorInfo.IsValid() ||
+        AbilitySystemComponent->GetOwnerActor() != this ||
+        AbilitySystemComponent->GetAvatarActor() != this)
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot grant startup abilities for %s: server Ability Actor Info is not ready."),
+            *GetPathName());
+        return false;
+    }
+
+    if (StartupAbilitySet == nullptr)
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot grant startup abilities for %s: startup ability configuration is missing."),
+            *GetPathName());
+        return false;
+    }
+
+    FText ValidationError;
+    if (!StartupAbilitySet->ValidateInitialAttributesEffect(ValidationError) ||
+        !StartupAbilitySet->ValidateGrantedAbilities(ValidationError))
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot grant startup abilities for %s from %s: %s"),
+            *GetPathName(),
+            *StartupAbilitySet->GetPathName(),
+            *ValidationError.ToString());
+        return false;
+    }
+
+    if (!StartupAbilitySet->GiveToAbilitySystem(
+        *AbilitySystemComponent,
+        StartupAbilityHandles,
+        ValidationError))
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot grant startup abilities for %s from %s: %s"),
+            *GetPathName(),
+            *StartupAbilitySet->GetPathName(),
+            *ValidationError.ToString());
+        return false;
+    }
+
+    return true;
+}
+
+bool AVelrathCharacter::RemoveStartupAbilities()
+{
+    if (!HasAuthority() || StartupAbilitySet == nullptr)
+    {
+        return false;
+    }
+
+    FText RemovalError;
+    if (!StartupAbilitySet->TakeFromAbilitySystem(StartupAbilityHandles, RemovalError))
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot remove startup abilities for %s: %s"),
+            *GetPathName(),
+            *RemovalError.ToString());
+        return false;
+    }
+
+    return true;
+}
+
 void AVelrathCharacter::InitializeDefaultAttributes()
 {
-    if (!HasAuthority() || bDefaultAttributesInitialized || AbilitySystemComponent == nullptr || AttributeSet == nullptr)
+    if (!HasAuthority() || bDefaultAttributesInitialized)
     {
         return;
     }
 
-    AbilitySystemComponent->SetNumericAttributeBase(
-        UVelrathAttributeSet::GetMaxHealthAttribute(),
-        UVelrathAttributeSet::DefaultMaxHealth);
-    AbilitySystemComponent->SetNumericAttributeBase(
-        UVelrathAttributeSet::GetHealthAttribute(),
-        UVelrathAttributeSet::DefaultHealth);
-    AbilitySystemComponent->SetNumericAttributeBase(
-        UVelrathAttributeSet::GetMaxStaminaAttribute(),
-        UVelrathAttributeSet::DefaultMaxStamina);
-    AbilitySystemComponent->SetNumericAttributeBase(
-        UVelrathAttributeSet::GetStaminaAttribute(),
-        UVelrathAttributeSet::DefaultStamina);
+    if (AbilitySystemComponent == nullptr || AttributeSet == nullptr ||
+        !AbilitySystemComponent->AbilityActorInfo.IsValid() ||
+        AbilitySystemComponent->GetOwnerActor() != this ||
+        AbilitySystemComponent->GetAvatarActor() != this)
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot initialize attributes for %s: server Ability Actor Info is not ready."),
+            *GetPathName());
+        return;
+    }
+
+    if (StartupAbilitySet == nullptr)
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot initialize attributes for %s: StartupAbilitySet is not configured."),
+            *GetPathName());
+        return;
+    }
+
+    FText ValidationError;
+    if (!StartupAbilitySet->ValidateInitialAttributesEffect(ValidationError))
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot initialize attributes for %s from %s: %s"),
+            *GetPathName(),
+            *StartupAbilitySet->GetPathName(),
+            *ValidationError.ToString());
+        return;
+    }
+
+    FGameplayEffectContextHandle EffectContext = AbilitySystemComponent->MakeEffectContext();
+    EffectContext.AddSourceObject(StartupAbilitySet);
+    const FGameplayEffectSpecHandle EffectSpec = AbilitySystemComponent->MakeOutgoingSpec(
+        StartupAbilitySet->GetInitialAttributesEffect(),
+        1.0f,
+        EffectContext);
+    if (!EffectSpec.IsValid())
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot initialize attributes for %s: failed to create a spec from %s."),
+            *GetPathName(),
+            *StartupAbilitySet->GetInitialAttributesEffect()->GetPathName());
+        return;
+    }
+
+    const FActiveGameplayEffectHandle AppliedHandle =
+        AbilitySystemComponent->ApplyGameplayEffectSpecToSelf(*EffectSpec.Data.Get());
+    if (!AppliedHandle.WasSuccessfullyApplied())
+    {
+        UE_LOG(
+            LogVelrathCharacter,
+            Error,
+            TEXT("Cannot initialize attributes for %s: %s was rejected by GAS."),
+            *GetPathName(),
+            *StartupAbilitySet->GetInitialAttributesEffect()->GetPathName());
+        return;
+    }
 
     bDefaultAttributesInitialized = true;
 }

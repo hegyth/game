@@ -8,7 +8,7 @@ VELRATH is a Windows PC / Steam competitive 3v3 Action RPG built with Unreal Eng
 
 The MVP uses one runtime module, `VELRATH`. Combat is server-authoritative. The owning client may predict supported movement and abilities, but the server decides ability validity, hits, damage, resource changes, Echo placement, and match results.
 
-Current implementation includes `AVelrathCharacter`, its Character-owned Ability System Component (ASC), a placeholder base `UAttributeSet`, and `AVelrathGameMode`. The remaining types described here are planned responsibilities, not existing classes.
+Current implementation includes `AVelrathCharacter`, its Character-owned Ability System Component (ASC), `UVelrathAttributeSet` with replicated Health/MaxHealth/Stamina/MaxStamina, and `AVelrathGameMode`. The remaining types described here are planned responsibilities, not existing classes.
 
 ## 2. Architecture Principles
 
@@ -95,13 +95,32 @@ Spawn choice and final transform are server-only decisions. Clients may display 
 
 ### UVelrathAttributeSet
 
-The current base `UAttributeSet` is a compile-time placeholder and must be replaced before adding real attributes.
+`UVelrathAttributeSet` owns Health, MaxHealth, Stamina, and MaxStamina. Exactly one instance is registered with each Character-owned ASC.
 
 - Define approved combat attributes only; their formulas and values come from `docs/combat/COMBAT_SPEC.md`.
 - Replicate attributes that clients need for prediction, UI, or presentation.
 - Use `GetLifetimeReplicatedProps`, per-attribute RepNotify functions, and `GAMEPLAYATTRIBUTE_REPNOTIFY`.
 - Enforce invariants in standard AttributeSet hooks such as pre-change clamping and post-effect processing, without duplicating damage logic in Character.
 - The server is authoritative for final attribute values.
+
+### Initial attributes (TD-22)
+
+- The sole runtime source of the four starting magnitudes is one human-authored Instant Gameplay Effect. Its four `Override` modifiers initialize MaxHealth, Health, MaxStamina, and Stamina; no starting magnitude is duplicated in C++, Blueprint defaults, or the startup Data Asset.
+- The shared startup Primary Data Asset references that Gameplay Effect class but does not repeat its magnitudes. GAS-007 extends the same schema with shared foundational ability references and retained grant handles rather than creating a second loadout/configuration path.
+- The initialization effect sets each maximum before its corresponding current value. The approved asset therefore produces Health/MaxHealth `1000/1000` and Stamina/MaxStamina `100/100`, while normal AttributeSet clamping remains the final invariant boundary.
+- Only the authoritative Character creates an outgoing effect spec and applies it to its own ASC. This happens once, synchronously after server `InitAbilityActorInfo(this, this)` succeeds. Clients never apply the effect; they receive the four attributes through normal AttributeSet replication.
+- A transient, server-only per-Character guard belongs to startup orchestration, not Actor Info initialization. Re-running `PossessedBy` for the same Character may reinitialize Actor Info but cannot reapply the effect or reset changed attributes. A newly spawned respawn Character owns a fresh ASC, AttributeSet, and guard, so it receives one new initialization.
+- Missing startup data, a null/wrong-duration effect, an unexpected attribute/modifier operation, duplicate/missing modifiers, non-finite/negative magnitudes, or current values above their maxima is a validation/startup error. Initialization fails closed, logs an actionable error, and does not fall back to C++ constants or mark the guard complete.
+- Blueprint construction, `OnConstruction`, client replication callbacks, and Data Asset/Blueprint reinstance are not initialization triggers. An already initialized live Character is not silently rebalanced when content is recompiled; a newly spawned Character reads the current validated asset.
+
+### Shared startup abilities (GAS-007)
+
+- The same shared startup Primary Data Asset owns the configurable list of foundational Gameplay Ability classes. Empty lists are valid until real abilities are approved; null, duplicate, abstract, deprecated, or non-Gameplay-Ability entries fail validation.
+- Only the authoritative Character calls `GiveAbility`, after `InitAbilityActorInfo(this, this)`. Actor Info initialization itself never grants abilities.
+- Each successful grant retains its `FGameplayAbilitySpecHandle` in transient Character-owned state together with the issuing Ability Set and target ASC. Repeated grant requests and same-Character repossession are idempotent.
+- Removal uses only those retained handles and requires the original authoritative ASC and issuing Ability Set, so abilities granted by other systems remain untouched.
+- A replacement Character owns a fresh ASC and grant state. GAS replication delivers ability specs to the owning client according to normal Mixed-mode visibility; server-only handle bookkeeping is not replicated.
+- Ability grants and the TD-22 initialization effect have separate guards. Granting abilities never resets Health or Stamina.
 
 ### Abilities, effects, tags, and cues
 
@@ -117,8 +136,8 @@ Core tags used by C++ contracts should be declared centrally as native gameplay 
 
 1. GameMode spawns and possesses a new Character on the server.
 2. `PossessedBy` initializes server Actor Info.
-3. The server applies initial attribute effects and grants the archetype's startup ability set.
-4. A server-only per-Character guard prevents duplicate grants. The grant operation must also retain granted handles when later removal is required.
+3. The server applies the one TD-22 initial-attribute effect if that Character has not completed attribute initialization.
+4. Separately, the server grants the shared startup ability set once. Attribute initialization and ability grants use distinct server-only per-Character guards; the grant operation retains granted handles when later removal is required.
 5. Replication delivers abilities, effects, tags, and attributes to the owning client according to GAS rules.
 6. The owning client initializes Actor Info through the possession/PlayerState replication path.
 7. On death, the old Character and its combat state are retired. Respawn creates a new Character, ASC, AttributeSet, and one new startup grant sequence. PlayerState statistics persist.
@@ -140,9 +159,35 @@ Damage effects and combat results are applied only by the server. Client predict
 | Combat States | Gameplay tags and GAS activation/cancellation relationships. | A minimal replicated presentation value is allowed only if tags cannot serve the requirement. |
 | Animation Montages | Ability-controlled montage tasks and gameplay events/notifies. | AnimInstance presents movement/combat state; notifies mark windows but do not decide authority. |
 
+### Combat timing and scheduling (TD-01)
+
+VELRATH uses a hybrid timing model. A focused world-scoped logical combat clock advances integer combat ticks at a target rate of `60 Hz`; GAS continues to own ability lifecycle, costs, cooldowns, effects, and canonical state tags; `UCharacterMovementComponent` continues to own physical movement and its prediction/correction; animation remains presentation. The combat clock is not a second ability framework and does not place Unreal physics or Character Movement in a custom fixed-step loop.
+
+The authoritative clock exists in the server's gameplay `UWorld`. Its driver runs once per Unreal World Tick with the world's gameplay `DeltaSeconds`, accumulates elapsed time in double precision, and emits zero or more `1/60`-second logical steps. It must not use an Actor/Component `TickInterval` or an Unreal timer as a claim of exact `60 Hz` execution. Each emitted step increments one monotonic `uint64` tick before processing that tick. Step extraction must preserve a normalized sub-step remainder and pass long-run drift tests; it must not depend on exact equality between decimal frame deltas. A maximum of eight combat steps may execute in one World Tick; excess accumulated time remains pending and is never converted into skipped combat ticks or a larger variable step. Sustained inability to drain that backlog is a server performance failure to measure and report, not permission to change authored windows.
+
+An authoritative action records its server `StartTick` when GAS accepts activation. Its local tick is `CurrentTick - StartTick`, and every window is evaluated as a half-open integer interval `[startTick, endTick)`. State transitions scheduled for tick `N` are applied before authoritative resolution for tick `N`. Server hit queries use the authoritative world state available when the combat step executes; catch-up does not invent intermediate Character Movement or physics transforms.
+
+The owning client may use normal GAS prediction and montage prediction for responsiveness, but predicted presentation never advances the authoritative clock or confirms a hit, Parry, Dodge invulnerability, damage, resource change, Echo result, or death. Replication sends state changes and sparse tick anchors rather than one replicated value per combat step. The authoritative epoch, anchor payload/cadence, and client estimate are defined by TD-02 below.
+
+This contract guarantees exact discrete window boundaries and repeatable server ordering for identical authoritative inputs. It does not claim lockstep determinism of Unreal physics, Character Movement, render frames, network delivery, or simulations on different machines. Rollback and server rewind are not part of TD-01.
+
+### Combat clock replication and network time mapping (TD-02)
+
+Each authoritative gameplay `UWorld` creates one clock epoch when its world-scoped combat clock initializes at world begin play. `CurrentTick` starts at `0` before the first emitted combat step and remains a monotonic `uint64` for that world. Respawn does not reset it. World teardown or travel creates a new clock instance and epoch; action state from the previous epoch is not carried across implicitly.
+
+Clients use the standard `AGameStateBase::GetServerWorldTimeSeconds()` estimate as the network time domain, but server world time is not itself the combat clock. The replicated `AVelrathGameState` publishes a compact clock anchor containing the clock epoch, a monotonic anchor sequence, the authoritative `CurrentTick`, and the sampled server world time for the same instant. Under normal operation it refreshes at `10 Hz`, aligned with the default GameState server-time update frequency, and immediately requests replication when the epoch starts or combat-clock overrun begins or ends. It does not send an RPC or property update for every combat step.
+
+From the newest valid anchor `(AnchorTick, AnchorServerTime)`, a client forms a presentation-only estimate using `AnchorTick + floor(max(0, EstimatedServerTime - AnchorServerTime) * 60)`. The estimate is capped to 30 ticks beyond the last authoritative anchor; when that 500 ms horizon is exhausted, presentation holds or falls back to the last authoritative phase until a newer anchor arrives. A newer anchor always rebases the estimate because server hitch/backlog can make `CurrentTick` temporarily lag elapsed server world time. Small corrections may be smoothed inside one authoritative phase; an epoch change, cancellation, terminal state, or contradictory authoritative phase is applied immediately. This estimate never validates hits, damage, Parry, Dodge, resource changes, cooldowns, Echo outcomes, or death.
+
+Replicated combat actions are state snapshots, not event streams. The owning replicated Character or feature Actor supplies its own network identity; the minimal action state adds an action type, server-assigned instance ID, monotonic revision, authoritative `StartTick`, current phase/state and its change tick, and optional authoritative end tick/reason. The owner correlates the accepted instance with the normal GAS activation prediction key; remote clients need only the authoritative instance. A new GameState/epoch resets cached mapping and action presentation; within one epoch, clients discard an older anchor sequence or action instance/revision. Late join receives the current GameState anchor and the current replicated action/feature snapshots, so reconstruction does not depend on an earlier multicast.
+
+Authoritative gameplay events remain exactly-once on the server through feature-owned keys such as `(ActionInstanceId, Target)` or `(ActionInstanceId, EventKind, BoundaryTick)`. Client presentation deduplicates cosmetic events by replicated actor identity, clock epoch, action instance, event kind, and authoritative event tick; correcting or replaying a montage must not apply a gameplay event again. Ability cancellation, interruption, pawn destruction, and respawn publish or imply a newer terminal/replacement state and clear unmatched local prediction through standard GAS reconciliation. Character Movement SavedMoves remain independent: they carry movement intent and receive normal server correction, never combat-clock authority.
+
+Clock synchronization does not provide lag compensation. Historical transforms, client-shot timestamps, server rewind, and acceptance thresholds remain a separate measured decision.
+
 Do not introduce a general Combat Manager or parallel ability component preemptively. A focused component is allowed only for a proven shared non-GAS responsibility, such as reusable weapon trace state, and must not own ability activation, costs, cooldowns, effects, or authoritative combat state.
 
-No balance values, timings, trace dimensions, damage formulas, or Stamina numbers are defined here.
+Balance values, timings, trace dimensions, damage formulas, and Stamina numbers originate in `docs/combat/COMBAT_SPEC.md`. Any value repeated here only identifies an architecture contract and does not become a second balance authority.
 
 ## 6. Resonance Architecture
 
@@ -235,13 +280,13 @@ The existing `Game/VelrathGameMode` path is functional. Move it to `GameModes/` 
 
 - `docs/GAME_VISION.md` defines approved product direction and non-goals.
 - This document defines technical ownership and boundaries.
-- The future `docs/combat/COMBAT_SPEC.md` defines approved combat rules and numerical balance intent.
+- `docs/combat/COMBAT_SPEC.md` defines approved combat rules and numerical balance intent.
 - Core gameplay tags are centralized and documented; do not use ad hoc string tags in feature code.
-- Primary Data Assets define archetype ability sets, startup loadouts, and approved configurable Echo/ability references.
+- Primary Data Assets define archetype ability sets, startup loadouts, and approved configurable Echo/ability references. For TD-22, the shared startup asset references the initial-attribute effect but does not duplicate its modifier magnitudes.
 - Gameplay Effect assets/classes hold costs, cooldowns, attribute modifiers, and durations once approved.
 - Enhanced Input assets define input actions and mapping contexts; C++ maps them to stable input tags/actions.
 - Blueprint and Data Asset `.uasset` files are binary. Codex may change their C++ schema and document required editor work, but must not edit the binary files directly.
-- Source-controlled balance must have one authority. Do not duplicate the same value across C++, Blueprint defaults, Data Assets, and documentation.
+- Source-controlled runtime balance must have one implementation authority. The Combat Specification remains the normative acceptance oracle, but a value must not be implemented independently in C++, Blueprint defaults, Data Assets, and Gameplay Effects. TD-22 starting attribute magnitudes are implemented only by the approved Instant Gameplay Effect.
 
 ## 10. Dependency Rules
 
@@ -294,8 +339,8 @@ Tests must fail when no matching test runs. Current scripts provide unique Autom
 
 - Epic Launcher UE 5.7.4 cannot build the existing `VELRATHServer` target. Dedicated server verification is unavailable.
 - Only Character and GameMode currently exist from the planned Gameplay Framework.
-- The current `UAttributeSet` instance is a placeholder with no project attributes or attribute replication.
-- Current automation covers module loading, not GAS replication or multiplayer behavior.
+- GAS-006 initializes startup attributes through the approved TD-22 shared Primary Data Asset and Instant Gameplay Effect; no playable C++ fallback magnitudes remain.
+- Current GAS content/lifecycle/CQTest coverage verifies the TD-22 asset/effect contract, validated shared ability references, retained grant ownership, server-only grants, owner-only ability-spec delivery, attribute replication, client non-authority, repossession, and pawn replacement. The production startup ability list remains intentionally empty until real foundational abilities are approved.
 - Convergence rules, combat numbers, Echo rules, archetype kits, and target hardware specification remain unresolved in `GAME_VISION.md`.
 - Steam sessions, matchmaking, authentication, and deployment architecture are not yet selected or implemented.
 - Binary Blueprint/Data Asset content cannot be safely authored through text-only Codex changes.
@@ -314,13 +359,15 @@ Tests must fail when no matching test runs. Current scripts provide unique Autom
 | AD-008 | Use standard `APlayerStart` plus tags until typed metadata is required. | Avoids an unnecessary subclass. |
 | AD-009 | Keep balance outside architecture code. | Enables controlled tuning without scattering constants. |
 | AD-010 | Use PIE/listen server until a source-engine dedicated-server path exists. | Matches current toolchain capability without changing authority design. |
+| AD-011 | Use a server-authoritative 60 Hz logical combat clock with an eight-step bounded catch-up inside a hybrid GAS/Character Movement architecture. | Gives integer combat-window boundaries and deterministic server ordering without replacing GAS, Character Movement prediction, Unreal physics, or animation timing. |
+| AD-012 | Map client presentation to combat time through synchronized GameState server time plus sparse global and per-action tick anchors. | Supports late join and correction without trusting client time or replicating every combat tick, including when server backlog breaks a direct world-time-to-tick formula. |
+| AD-013 | Use one Instant Gameplay Effect as the sole runtime source of starting attribute magnitudes, referenced without duplicated values by the shared startup Data Asset and applied once per new Character by the server. | Keeps initialization GAS-native and Editor-tunable while preserving Character-lifetime state, repossession, respawn, and replication contracts. |
 
 ## 15. Open Technical Questions
 
 These are unresolved and must not be treated as approved implementation requirements:
 
 - What exact Convergence state machine, scoring model, and spawn rules follow from the final mode design?
-- Which attributes and damage formula will `docs/combat/COMBAT_SPEC.md` approve?
 - What are the exact ability sets and input bindings for Vanguard, Reaver, and Weaver?
 - Which Echo placement constraints, active limit, lifecycle states, and relevancy rules are required?
 - Which attack types need traces, overlaps, or another standard Unreal hit-query method?

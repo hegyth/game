@@ -2,13 +2,17 @@
 
 #include "Misc/AutomationTest.h"
 
+#include "Abilities/VelrathAbilitySet.h"
 #include "AbilitySystemComponent.h"
 #include "Attributes/VelrathAttributeSet.h"
+#include "Engine/Blueprint.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
 #include "GameplayEffect.h"
 #include "HAL/PlatformTime.h"
+#include "Kismet2/BlueprintEditorUtils.h"
+#include "Kismet2/KismetEditorUtilities.h"
 #include "Net/UnrealNetwork.h"
 #include "Player/VelrathCharacter.h"
 #include "Tests/AutomationCommon.h"
@@ -81,6 +85,33 @@ public:
         AVelrathCharacter* Character = PlayerController != nullptr
             ? Cast<AVelrathCharacter>(PlayerController->GetPawn())
             : nullptr;
+
+        if (bBlueprintReinstanceRequested && Character == nullptr)
+        {
+            Character = OriginalCharacter.Get();
+            if (Character == nullptr)
+            {
+                UBlueprint* CharacterBlueprint = LoadObject<UBlueprint>(
+                    nullptr,
+                    TEXT("/Game/Characters/BP_VelrathCharacter.BP_VelrathCharacter"));
+                const AVelrathCharacter* CharacterDefaults =
+                    CharacterBlueprint != nullptr && CharacterBlueprint->GeneratedClass != nullptr
+                    ? Cast<AVelrathCharacter>(CharacterBlueprint->GeneratedClass->GetDefaultObject())
+                    : nullptr;
+                Test->TestNotNull(
+                    TEXT("Reinstanced BP_VelrathCharacter retains loadable defaults"),
+                    CharacterDefaults);
+                if (CharacterDefaults != nullptr)
+                {
+                    Test->TestNotNull(
+                        TEXT("Reinstanced BP_VelrathCharacter retains the startup asset reference"),
+                        CharacterDefaults->GetStartupAbilitySet());
+                }
+                Test->AddInfo(TEXT("Editor Blueprint compilation destroyed the live PIE Actor and left no replacement pawn; recorded as editor-only reinstance, not gameplay respawn."));
+                return true;
+            }
+        }
+
         if (Character == nullptr)
         {
             if (FPlatformTime::Seconds() - StartTimeSeconds >= AttributePieTimeoutSeconds)
@@ -90,6 +121,62 @@ public:
             }
 
             return false;
+        }
+
+        if (bBlueprintReinstanceRequested)
+        {
+            UAbilitySystemComponent* ReinstancedAbilitySystemComponent = Character->GetAbilitySystemComponent();
+            const UVelrathAttributeSet* ReinstancedAttributeSet = Character->GetVelrathAttributeSet();
+            Test->TestNotNull(TEXT("Reinstanced PIE Character retains its ASC"), ReinstancedAbilitySystemComponent);
+            Test->TestNotNull(TEXT("Reinstanced PIE Character retains its AttributeSet"), ReinstancedAttributeSet);
+            if (ReinstancedAbilitySystemComponent == nullptr || ReinstancedAttributeSet == nullptr)
+            {
+                return true;
+            }
+
+            Test->TestTrue(
+                TEXT("Blueprint reinstance preserves the completed initialization guard"),
+                Character->AreDefaultAttributesInitialized());
+            Test->TestNotNull(
+                TEXT("Blueprint reinstance preserves the startup asset reference"),
+                Character->GetStartupAbilitySet());
+            Test->TestEqual(
+                TEXT("Blueprint reinstance does not reset changed Health"),
+                ReinstancedAttributeSet->GetHealth(),
+                900.0f);
+            Test->TestEqual(
+                TEXT("Blueprint reinstance does not reset changed Stamina"),
+                ReinstancedAttributeSet->GetStamina(),
+                75.0f);
+
+            int32 ReinstancedAttributeSetCount = 0;
+            int32 ReinstancedTotalAttributeSetCount = 0;
+            for (const UAttributeSet* SpawnedAttributeSet : ReinstancedAbilitySystemComponent->GetSpawnedAttributes())
+            {
+                if (SpawnedAttributeSet != nullptr)
+                {
+                    ++ReinstancedTotalAttributeSetCount;
+                    if (SpawnedAttributeSet->IsA<UVelrathAttributeSet>())
+                    {
+                        ++ReinstancedAttributeSetCount;
+                    }
+                }
+            }
+            Test->TestEqual(
+                TEXT("Blueprint reinstance retains exactly one UVelrathAttributeSet"),
+                ReinstancedAttributeSetCount,
+                1);
+            Test->TestEqual(
+                TEXT("Blueprint reinstance retains exactly one total AttributeSet"),
+                ReinstancedTotalAttributeSetCount,
+                1);
+
+            if (Character != OriginalCharacter.Get())
+            {
+                Test->AddInfo(TEXT("Editor Blueprint compilation replaced the live PIE Actor; this was validated as editor reinstance, not gameplay respawn."));
+            }
+
+            return true;
         }
 
         UAbilitySystemComponent* AbilitySystemComponent = Character->GetAbilitySystemComponent();
@@ -104,6 +191,8 @@ public:
         Test->TestTrue(TEXT("PIE Character is authoritative"), Character->HasAuthority());
         Test->TestTrue(TEXT("ASC Owner Actor remains the Character"), AbilitySystemComponent->GetOwnerActor() == Character);
         Test->TestTrue(TEXT("ASC Avatar Actor remains the Character"), AbilitySystemComponent->GetAvatarActor() == Character);
+        Test->TestNotNull(TEXT("PIE Character has the shared startup asset"), Character->GetStartupAbilitySet());
+        Test->TestTrue(TEXT("PIE server completed startup attribute initialization"), Character->AreDefaultAttributesInitialized());
         Test->TestEqual(TEXT("PIE starts with Health 1000"), AttributeSet->GetHealth(), 1000.0f);
         Test->TestEqual(TEXT("PIE starts with MaxHealth 1000"), AttributeSet->GetMaxHealth(), 1000.0f);
         Test->TestEqual(TEXT("PIE starts with Stamina 100"), AttributeSet->GetStamina(), 100.0f);
@@ -179,12 +268,27 @@ public:
             TotalAttributeSetCount,
             1);
 
-        return true;
+        UBlueprint* CharacterBlueprint = LoadObject<UBlueprint>(
+            nullptr,
+            TEXT("/Game/Characters/BP_VelrathCharacter.BP_VelrathCharacter"));
+        Test->TestNotNull(TEXT("Lifecycle test loads BP_VelrathCharacter for reinstance validation"), CharacterBlueprint);
+        if (CharacterBlueprint == nullptr)
+        {
+            return true;
+        }
+
+        OriginalCharacter = Character;
+        bBlueprintReinstanceRequested = true;
+        FBlueprintEditorUtils::MarkBlueprintAsStructurallyModified(CharacterBlueprint);
+        FKismetEditorUtilities::CompileBlueprint(CharacterBlueprint);
+        return false;
     }
 
 private:
     FAutomationTestBase* Test;
     double StartTimeSeconds;
+    TWeakObjectPtr<AVelrathCharacter> OriginalCharacter;
+    bool bBlueprintReinstanceRequested = false;
 };
 }
 
@@ -221,10 +325,37 @@ bool FVelrathHealthAttributeSetTest::RunTest(const FString& Parameters)
     AbilitySystemComponent->InitAbilityActorInfo(Character, Character);
     AbilitySystemComponent->AddAttributeSetSubobject(const_cast<UVelrathAttributeSet*>(AttributeSet));
 
-    TestEqual(TEXT("Initial Health is 1000"), AttributeSet->GetHealth(), 1000.0f);
-    TestEqual(TEXT("Initial MaxHealth is 1000"), AttributeSet->GetMaxHealth(), 1000.0f);
-    TestEqual(TEXT("Initial Stamina is 100"), AttributeSet->GetStamina(), 100.0f);
-    TestEqual(TEXT("Initial MaxStamina is 100"), AttributeSet->GetMaxStamina(), 100.0f);
+    TestEqual(TEXT("Health is structurally zero before the initialization effect"), AttributeSet->GetHealth(), 0.0f);
+    TestEqual(TEXT("MaxHealth is structurally zero before the initialization effect"), AttributeSet->GetMaxHealth(), 0.0f);
+    TestEqual(TEXT("Stamina is structurally zero before the initialization effect"), AttributeSet->GetStamina(), 0.0f);
+    TestEqual(TEXT("MaxStamina is structurally zero before the initialization effect"), AttributeSet->GetMaxStamina(), 0.0f);
+
+    UVelrathAbilitySet* StartupAsset = LoadObject<UVelrathAbilitySet>(
+        nullptr,
+        TEXT("/Game/Abilities/DA_VelrathSharedStartup.DA_VelrathSharedStartup"));
+    TestNotNull(TEXT("Unit test loads the shared startup asset"), StartupAsset);
+    if (StartupAsset == nullptr)
+    {
+        return false;
+    }
+
+    const FGameplayEffectSpecHandle StartupSpec = AbilitySystemComponent->MakeOutgoingSpec(
+        StartupAsset->GetInitialAttributesEffect(),
+        1.0f,
+        AbilitySystemComponent->MakeEffectContext());
+    TestTrue(TEXT("GAS creates a spec for the authored initialization effect"), StartupSpec.IsValid());
+    if (!StartupSpec.IsValid())
+    {
+        return false;
+    }
+
+    const FActiveGameplayEffectHandle StartupHandle =
+        AbilitySystemComponent->ApplyGameplayEffectSpecToSelf(*StartupSpec.Data.Get());
+    TestTrue(TEXT("GAS applies the authored initialization effect"), StartupHandle.WasSuccessfullyApplied());
+    TestEqual(TEXT("Initialization effect sets Health to 1000"), AttributeSet->GetHealth(), 1000.0f);
+    TestEqual(TEXT("Initialization effect sets MaxHealth to 1000"), AttributeSet->GetMaxHealth(), 1000.0f);
+    TestEqual(TEXT("Initialization effect sets Stamina to 100"), AttributeSet->GetStamina(), 100.0f);
+    TestEqual(TEXT("Initialization effect sets MaxStamina to 100"), AttributeSet->GetMaxStamina(), 100.0f);
 
     int32 VelrathAttributeSetCount = 0;
     for (const UAttributeSet* SpawnedAttributeSet : AbilitySystemComponent->GetSpawnedAttributes())
@@ -374,6 +505,39 @@ bool FVelrathHealthAttributeSetTest::RunTest(const FString& Parameters)
     TestEqual(TEXT("OnRep_MaxHealth receives the old value"), MaxHealthRepNotify != nullptr ? MaxHealthRepNotify->NumParms : 0, 1);
     TestEqual(TEXT("OnRep_Stamina receives the old value"), StaminaRepNotify != nullptr ? StaminaRepNotify->NumParms : 0, 1);
     TestEqual(TEXT("OnRep_MaxStamina receives the old value"), MaxStaminaRepNotify != nullptr ? MaxStaminaRepNotify->NumParms : 0, 1);
+
+    AVelrathCharacter* MissingConfigCharacter = World->SpawnActor<AVelrathCharacter>();
+    APlayerController* MissingConfigController = World->SpawnActor<APlayerController>();
+    TestNotNull(TEXT("Missing-config Character can be spawned"), MissingConfigCharacter);
+    TestNotNull(TEXT("Missing-config controller can be spawned"), MissingConfigController);
+    if (MissingConfigCharacter != nullptr && MissingConfigController != nullptr)
+    {
+        AddExpectedError(
+            TEXT("StartupAbilitySet is not configured"),
+            EAutomationExpectedErrorFlags::Contains,
+            1);
+        MissingConfigController->Possess(MissingConfigCharacter);
+
+        TestFalse(
+            TEXT("Missing startup configuration leaves initialization incomplete"),
+            MissingConfigCharacter->AreDefaultAttributesInitialized());
+        TestEqual(
+            TEXT("Missing startup configuration leaves Health at structural zero"),
+            MissingConfigCharacter->GetVelrathAttributeSet()->GetHealth(),
+            0.0f);
+        TestEqual(
+            TEXT("Missing startup configuration leaves MaxHealth at structural zero"),
+            MissingConfigCharacter->GetVelrathAttributeSet()->GetMaxHealth(),
+            0.0f);
+        TestEqual(
+            TEXT("Missing startup configuration leaves Stamina at structural zero"),
+            MissingConfigCharacter->GetVelrathAttributeSet()->GetStamina(),
+            0.0f);
+        TestEqual(
+            TEXT("Missing startup configuration leaves MaxStamina at structural zero"),
+            MissingConfigCharacter->GetVelrathAttributeSet()->GetMaxStamina(),
+            0.0f);
+    }
 
     return true;
 }
